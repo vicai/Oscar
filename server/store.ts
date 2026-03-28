@@ -10,7 +10,10 @@ import type {
   UserRecord,
 } from './types.js'
 
-const DATA_FILE = resolve(process.cwd(), 'data', 'oscar-db.json')
+const dataDirectory = process.env.DATA_DIR
+  ? resolve(process.env.DATA_DIR)
+  : resolve(process.cwd(), 'data')
+const DATA_FILE = resolve(dataDirectory, 'oscar-db.json')
 
 const emptyDatabase: Database = {
   users: [],

@@ -5,9 +5,9 @@ Adaptive chess web app with:
 - React + Vite frontend
 - Express API
 - Stockfish 18 Lite backend engine
-- File-backed multi-user persistence in `data/oscar-db.json`
+- File-backed multi-user persistence
 
-## Run
+## Local Development
 
 ```bash
 pnpm install
@@ -22,23 +22,61 @@ API:
 
 - `http://localhost:3001`
 
+## Production
+
+Build:
+
+```bash
+pnpm build
+```
+
+Start:
+
+```bash
+pnpm start
+```
+
+The production server:
+
+- serves the built frontend from `dist/`
+- exposes API routes under `/api`
+- exposes health checks at `/healthz`
+
+## Persistence
+
+By default, Oscar stores data in:
+
+```bash
+./data/oscar-db.json
+```
+
+You can override the storage directory with:
+
+```bash
+DATA_DIR=/var/data
+```
+
+This is recommended for Render persistent disks.
+
+## Render Settings
+
+Recommended first deploy:
+
+- Root Directory: leave blank
+- Build Command: `pnpm install --frozen-lockfile && pnpm build`
+- Start Command: `pnpm start`
+- Health Check Path: `/healthz`
+
+If using a persistent disk on a paid Render instance:
+
+- mount path: `/var/data`
+- environment variable: `DATA_DIR=/var/data`
+
 ## Scripts
 
 ```bash
 pnpm dev
 pnpm build
 pnpm lint
-pnpm start:server
+pnpm start
 ```
-
-## Product Notes
-
-- Every profile starts with adaptive rating `100`.
-- Win: rating increases.
-- Loss: rating decreases.
-- Draw: small adjustment toward stability.
-- The displayed rating is an app difficulty score, not an official Elo system.
-
-## Persistence
-
-The app creates `data/oscar-db.json` on first use. That file is intentionally ignored by git.

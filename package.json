@@ -3,14 +3,17 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
+  "packageManager": "pnpm@10.33.0",
   "scripts": {
     "dev": "concurrently -k \"pnpm dev:server\" \"pnpm dev:client\"",
     "dev:client": "vite",
     "dev:server": "node --watch --import tsx server/index.ts",
-    "build": "tsc -b && vite build",
+    "build": "pnpm build:server && tsc -b && vite build",
+    "build:server": "tsc -p tsconfig.server.json",
     "lint": "eslint .",
     "preview": "vite preview",
-    "start:server": "node --import tsx server/index.ts"
+    "start": "node build/server/server/index.js",
+    "start:server": "node build/server/server/index.js"
   },
   "dependencies": {
     "chess.js": "^1.4.0",

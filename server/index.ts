@@ -1,5 +1,7 @@
 import express from 'express'
 import { Chess } from 'chess.js'
+import { existsSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { analyzePosition, chooseEngineMove } from './engine.js'
 import {
   getOpeningById,
@@ -27,8 +29,23 @@ import type {
 
 const app = express()
 const port = Number(process.env.PORT ?? 3001)
+const host = process.env.HOST ?? '0.0.0.0'
+const projectRoot = process.cwd()
+const distDir = resolve(projectRoot, 'dist')
+const indexFile = resolve(distDir, 'index.html')
+const dataDirectory = process.env.DATA_DIR
+  ? resolve(process.env.DATA_DIR)
+  : resolve(projectRoot, 'data')
 
 app.use(express.json())
+
+app.get('/healthz', (_request, response) => {
+  response.status(200).json({
+    ok: true,
+    port,
+    dataDir: dataDirectory,
+  })
+})
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value))
@@ -530,6 +547,16 @@ app.post('/api/games/:gameId/resign', async (request, response) => {
   }
 })
 
-app.listen(port, () => {
-  console.log(`Oscar server listening on http://localhost:${port}`)
+if (existsSync(distDir)) {
+  app.use(express.static(distDir))
+
+  app.get(/^(?!\/api\/).*/, (_request, response) => {
+    response.sendFile(indexFile)
+  })
+}
+
+app.listen(port, host, () => {
+  console.log(`Oscar server listening on http://${host}:${port}`)
+  console.log(`Serving frontend from ${distDir}`)
+  console.log(`Using data directory ${dataDirectory}`)
 })
