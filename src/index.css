@@ -1,0 +1,75 @@
+:root {
+  font-family:
+    'SF Pro Text',
+    'IBM Plex Sans',
+    'Segoe UI',
+    sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+  color: #242930;
+  background:
+    radial-gradient(circle at top left, rgba(226, 209, 177, 0.3), transparent 28%),
+    linear-gradient(180deg, #f4efe5 0%, #f0ebe2 44%, #ece7de 100%);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  color: #242930;
+}
+
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(rgba(37, 41, 48, 0.02) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(37, 41, 48, 0.02) 1px, transparent 1px);
+  background-size: 28px 28px;
+  mask-image: radial-gradient(circle at center, black 36%, transparent 92%);
+}
+
+#root {
+  min-height: 100vh;
+}
+
+h1,
+h2 {
+  margin: 0;
+  font-family:
+    'SF Pro Display',
+    'Inter',
+    'IBM Plex Sans',
+    sans-serif;
+  font-weight: 600;
+  line-height: 1.08;
+  color: #22262d;
+}
+
+h1 {
+  font-size: clamp(1.7rem, 2.5vw, 2.4rem);
+  max-width: 20ch;
+  letter-spacing: -0.03em;
+}
+
+h2 {
+  font-size: 1.1rem;
+  letter-spacing: -0.02em;
+}
+
+p {
+  margin: 0;
+}
+
+a {
+  color: inherit;
+}
