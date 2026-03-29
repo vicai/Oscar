@@ -1,6 +1,13 @@
 export type PlayerColor = 'white' | 'black'
 export type GameMode = 'adaptive' | 'act_as_ai'
 export type OpeningStatus = 'none' | 'following' | 'broken'
+export type AccountPlan = 'free' | 'premium'
+export type SubscriptionStatus =
+  | 'inactive'
+  | 'active'
+  | 'trialing'
+  | 'past_due'
+  | 'canceled'
 
 export type GameStatus =
   | 'active'
@@ -26,8 +33,31 @@ export type Evaluation = {
   label: string
 }
 
+export type AccountRecord = {
+  id: string
+  email: string
+  passwordHash: string
+  passwordSalt: string
+  plan: AccountPlan
+  subscriptionStatus: SubscriptionStatus
+  stripeCustomerId: string | null
+  stripeSubscriptionId: string | null
+  gamesUsedToday: number
+  usageWindowStartedAt: string
+  createdAt: string
+  updatedAt: string
+}
+
+export type SessionRecord = {
+  id: string
+  accountId: string
+  expiresAt: string
+  createdAt: string
+}
+
 export type UserRecord = {
   id: string
+  accountId: string
   name: string
   targetAiRating: number
   gamesPlayed: number
@@ -63,6 +93,8 @@ export type GameRecord = {
 }
 
 export type Database = {
+  accounts: AccountRecord[]
+  sessions: SessionRecord[]
   users: UserRecord[]
   games: GameRecord[]
 }

@@ -110,6 +110,82 @@
   line-height: 1.35;
 }
 
+.auth-panel,
+.tier-list,
+.account-meta {
+  display: grid;
+  gap: 12px;
+}
+
+.auth-toggle {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.tier-list {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.tier-card {
+  display: grid;
+  gap: 4px;
+  padding: 14px;
+  border-radius: 12px;
+  background: #f7f8fa;
+  border: 1px solid rgba(20, 24, 31, 0.06);
+}
+
+.tier-card span,
+.plan-pill {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.tier-card strong {
+  font-size: 1.05rem;
+  color: #23272f;
+}
+
+.tier-card small {
+  color: #707781;
+}
+
+.premium-tier {
+  background: linear-gradient(180deg, rgba(31, 109, 91, 0.1), rgba(31, 109, 91, 0.04));
+  border-color: rgba(31, 109, 91, 0.18);
+}
+
+.plan-pill {
+  display: inline-flex;
+  width: fit-content;
+  align-items: center;
+  border-radius: 999px;
+  padding: 6px 10px;
+}
+
+.plan-pill.free {
+  background: rgba(20, 24, 31, 0.06);
+  color: #4a525d;
+}
+
+.plan-pill.premium {
+  background: rgba(31, 109, 91, 0.12);
+  color: #1f6d5b;
+}
+
+.stacked-actions {
+  grid-template-columns: 1fr;
+}
+
+.full-width {
+  width: 100%;
+  margin-top: 10px;
+}
+
 .stack,
 .field {
   display: grid;
@@ -547,7 +623,8 @@ button:disabled {
   .hero-stats,
   .setup-fields,
   .result-card,
-  .stats-grid {
+  .stats-grid,
+  .tier-list {
     grid-template-columns: 1fr;
   }
 

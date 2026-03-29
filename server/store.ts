@@ -2,11 +2,15 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
 import { Chess } from 'chess.js'
 import type {
+  AccountRecord,
+  AccountPlan,
   Database,
   GameMode,
   GameRecord,
   OpeningStatus,
   PlayerColor,
+  SessionRecord,
+  SubscriptionStatus,
   UserRecord,
 } from './types.js'
 
@@ -16,6 +20,8 @@ const dataDirectory = process.env.DATA_DIR
 const DATA_FILE = resolve(dataDirectory, 'oscar-db.json')
 
 const emptyDatabase: Database = {
+  accounts: [],
+  sessions: [],
   users: [],
   games: [],
 }
@@ -39,6 +45,46 @@ function buildPositionHistoryFromMoves(moveHistory: GameRecord['moveHistory']) {
   }
 
   return history
+}
+
+function normalizeAccountRecord(
+  account: Partial<AccountRecord> & Pick<AccountRecord, 'id' | 'email' | 'createdAt' | 'updatedAt'>,
+): AccountRecord {
+  return {
+    id: account.id,
+    email: account.email.toLowerCase(),
+    passwordHash: account.passwordHash ?? '',
+    passwordSalt: account.passwordSalt ?? '',
+    plan: (account.plan ?? 'free') as AccountPlan,
+    subscriptionStatus: (account.subscriptionStatus ?? 'inactive') as SubscriptionStatus,
+    stripeCustomerId: account.stripeCustomerId ?? null,
+    stripeSubscriptionId: account.stripeSubscriptionId ?? null,
+    gamesUsedToday: account.gamesUsedToday ?? 0,
+    usageWindowStartedAt: account.usageWindowStartedAt ?? account.createdAt,
+    createdAt: account.createdAt,
+    updatedAt: account.updatedAt,
+  }
+}
+
+function normalizeSessionRecord(
+  session: Partial<SessionRecord> &
+    Pick<SessionRecord, 'id' | 'accountId' | 'createdAt'>,
+): SessionRecord {
+  return {
+    id: session.id,
+    accountId: session.accountId,
+    createdAt: session.createdAt,
+    expiresAt: session.expiresAt ?? new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
+  }
+}
+
+function normalizeUserRecord(
+  user: Omit<UserRecord, 'accountId'> & { accountId?: string },
+): UserRecord {
+  return {
+    ...user,
+    accountId: user.accountId ?? user.id,
+  }
 }
 
 function normalizeGameRecord(
@@ -83,8 +129,8 @@ async function ensureDataFile() {
 async function readDatabase(): Promise<Database> {
   await ensureDataFile()
   const raw = await readFile(DATA_FILE, 'utf8')
-  const parsed = JSON.parse(raw) as Database & {
-    games: Array<
+  const parsed = JSON.parse(raw) as Partial<Database> & {
+    games?: Array<
       Omit<GameRecord, 'mode' | 'positionHistory'> & {
         openingId?: string | null
         openingName?: string | null
@@ -94,10 +140,16 @@ async function readDatabase(): Promise<Database> {
         positionHistory?: string[]
       }
     >
+    users?: Array<Omit<UserRecord, 'accountId'> & { accountId?: string }>
+    accounts?: Array<Partial<AccountRecord> & Pick<AccountRecord, 'id' | 'email' | 'createdAt' | 'updatedAt'>>
+    sessions?: Array<Partial<SessionRecord> & Pick<SessionRecord, 'id' | 'accountId' | 'createdAt'>>
   }
+
   return {
-    users: parsed.users,
-    games: parsed.games.map(normalizeGameRecord),
+    accounts: (parsed.accounts ?? []).map(normalizeAccountRecord),
+    sessions: (parsed.sessions ?? []).map(normalizeSessionRecord),
+    users: (parsed.users ?? []).map(normalizeUserRecord),
+    games: (parsed.games ?? []).map(normalizeGameRecord),
   }
 }
 
@@ -106,14 +158,69 @@ async function writeDatabase(database: Database) {
   await writeFile(DATA_FILE, JSON.stringify(database, null, 2), 'utf8')
 }
 
-export async function listUsers() {
+export async function getAccountById(accountId: string) {
   const database = await readDatabase()
-  return database.users.sort((left, right) =>
-    left.createdAt.localeCompare(right.createdAt),
-  )
+  return database.accounts.find((account) => account.id === accountId) ?? null
 }
 
-export async function createUser(name: string) {
+export async function getAccountByEmail(email: string) {
+  const database = await readDatabase()
+  const normalizedEmail = email.trim().toLowerCase()
+  return database.accounts.find((account) => account.email === normalizedEmail) ?? null
+}
+
+export async function createAccount(account: AccountRecord) {
+  const database = await readDatabase()
+  database.accounts.push(account)
+  await writeDatabase(database)
+  return account
+}
+
+export async function updateAccount(
+  accountId: string,
+  updater: (account: AccountRecord) => AccountRecord,
+) {
+  const database = await readDatabase()
+  const index = database.accounts.findIndex((account) => account.id === accountId)
+  if (index === -1) {
+    throw new Error('Account not found.')
+  }
+
+  const updated = updater(database.accounts[index])
+  database.accounts[index] = updated
+  await writeDatabase(database)
+  return updated
+}
+
+export async function createSession(session: SessionRecord) {
+  const database = await readDatabase()
+  database.sessions = database.sessions.filter(
+    (currentSession) => currentSession.id !== session.id,
+  )
+  database.sessions.push(session)
+  await writeDatabase(database)
+  return session
+}
+
+export async function getSession(sessionId: string) {
+  const database = await readDatabase()
+  return database.sessions.find((session) => session.id === sessionId) ?? null
+}
+
+export async function deleteSession(sessionId: string) {
+  const database = await readDatabase()
+  database.sessions = database.sessions.filter((session) => session.id !== sessionId)
+  await writeDatabase(database)
+}
+
+export async function listUsersForAccount(accountId: string) {
+  const database = await readDatabase()
+  return database.users
+    .filter((user) => user.accountId === accountId)
+    .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
+}
+
+export async function createUser(accountId: string, name: string) {
   const trimmed = name.trim()
   if (!trimmed) {
     throw new Error('Profile name is required.')
@@ -124,6 +231,7 @@ export async function createUser(name: string) {
 
   const user: UserRecord = {
     id: crypto.randomUUID(),
+    accountId,
     name: trimmed,
     targetAiRating: 100,
     gamesPlayed: 0,

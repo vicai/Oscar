@@ -5,6 +5,21 @@ import type { Move, Square } from 'chess.js'
 import { Chessboard } from 'react-chessboard'
 import './App.css'
 
+type Account = {
+  id: string
+  email: string
+}
+
+type AccessState = {
+  plan: 'free' | 'premium'
+  subscriptionStatus: 'inactive' | 'active' | 'trialing' | 'past_due' | 'canceled'
+  canUseBestMove: boolean
+  maxAdaptiveRating: number
+  freeDailyGameCap: number
+  remainingFreeGamesToday: number | null
+  upgradeCtaLabel: string | null
+}
+
 type User = {
   id: string
   name: string
@@ -72,103 +87,108 @@ type GameResponse = {
   game: GameView
   user: User
   evaluation: Evaluation
+  access: AccessState
+}
+
+type MeResponse = {
+  account: Account
+  users: User[]
+  access: AccessState
+}
+
+type AuthResponse = MeResponse
+
+async function readJson<T>(response: Response) {
+  return (await response.json()) as T
+}
+
+async function apiRequest<T>(input: RequestInfo, init?: RequestInit) {
+  const response = await fetch(input, init)
+  if (!response.ok) {
+    const error = (await response.json().catch(() => null)) as
+      | { error?: string }
+      | null
+    throw new Error(error?.error ?? 'Request failed.')
+  }
+
+  if (response.status === 204) {
+    return null as T
+  }
+
+  return readJson<T>(response)
 }
 
 const api = {
-  async getUsers() {
-    const response = await fetch('/api/users')
-    if (!response.ok) {
-      throw new Error('Failed to load profiles.')
-    }
-    return (await response.json()) as { users: User[] }
+  me() {
+    return apiRequest<MeResponse>('/api/me')
   },
-  async createUser(name: string) {
-    const response = await fetch('/api/users', {
+  signUp(email: string, password: string) {
+    return apiRequest<AuthResponse>('/api/auth/sign-up', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password }),
+    })
+  },
+  signIn(email: string, password: string) {
+    return apiRequest<AuthResponse>('/api/auth/sign-in', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password }),
+    })
+  },
+  signOut() {
+    return apiRequest<null>('/api/auth/sign-out', {
+      method: 'POST',
+    })
+  },
+  async getOpenings() {
+    return apiRequest<{ openings: Opening[] }>('/api/openings')
+  },
+  createUser(name: string) {
+    return apiRequest<{ user: User; access: AccessState }>('/api/users', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name }),
     })
-
-    if (!response.ok) {
-      const error = (await response.json().catch(() => null)) as
-        | { error?: string }
-        | null
-      throw new Error(error?.error ?? 'Failed to create profile.')
-    }
-
-    return (await response.json()) as { user: User }
   },
-  async getOpenings() {
-    const response = await fetch('/api/openings')
-    if (!response.ok) {
-      throw new Error('Failed to load openings.')
-    }
-    return (await response.json()) as { openings: Opening[] }
-  },
-  async startGame(
+  startGame(
     userId: string,
     humanColor: 'white' | 'black',
     mode: GameMode,
     openingId: string | null,
   ) {
-    const response = await fetch('/api/games', {
+    return apiRequest<GameResponse>('/api/games', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ userId, humanColor, mode, openingId }),
     })
-
-    if (!response.ok) {
-      const error = (await response.json().catch(() => null)) as
-        | { error?: string }
-        | null
-      throw new Error(error?.error ?? 'Failed to start a game.')
-    }
-
-    return (await response.json()) as GameResponse
   },
-  async makeMove(gameId: string, from: string, to: string) {
-    const response = await fetch(`/api/games/${gameId}/move`, {
+  makeMove(gameId: string, from: string, to: string) {
+    return apiRequest<GameResponse>(`/api/games/${gameId}/move`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ from, to, promotion: 'q' }),
     })
-
-    if (!response.ok) {
-      const error = (await response.json().catch(() => null)) as
-        | { error?: string }
-        | null
-      throw new Error(error?.error ?? 'Move rejected.')
-    }
-
-    return (await response.json()) as GameResponse
   },
-  async resign(gameId: string) {
-    const response = await fetch(`/api/games/${gameId}/resign`, {
+  resign(gameId: string) {
+    return apiRequest<GameResponse>(`/api/games/${gameId}/resign`, {
       method: 'POST',
     })
-
-    if (!response.ok) {
-      const error = (await response.json().catch(() => null)) as
-        | { error?: string }
-        | null
-      throw new Error(error?.error ?? 'Failed to resign.')
-    }
-
-    return (await response.json()) as GameResponse
   },
-  async undo(gameId: string) {
-    const response = await fetch(`/api/games/${gameId}/undo`, {
+  undo(gameId: string) {
+    return apiRequest<GameResponse>(`/api/games/${gameId}/undo`, {
       method: 'POST',
     })
-
-    if (!response.ok) {
-      const error = (await response.json().catch(() => null)) as
-        | { error?: string }
-        | null
-      throw new Error(error?.error ?? 'Failed to undo the last turn.')
-    }
-
-    return (await response.json()) as GameResponse
+  },
+  createCheckoutSession() {
+    return apiRequest<{ url: string }>('/api/billing/create-checkout-session', {
+      method: 'POST',
+    })
+  },
+  createCustomerPortal() {
+    return apiRequest<{ url: string }>('/api/billing/customer-portal', {
+      method: 'POST',
+    })
   },
 }
 
@@ -207,7 +227,7 @@ function formatTurn(game: GameView | null) {
     ? 'Your move'
     : game.mode === 'act_as_ai'
       ? 'Stockfish is choosing the best move'
-      : 'Oscar is thinking'
+      : 'Oscar Lite is thinking'
 }
 
 function formatOpeningStatus(game: GameView | null) {
@@ -236,22 +256,27 @@ function isHumanOwnedSquare(
 }
 
 function App() {
+  const [account, setAccount] = useState<Account | null>(null)
+  const [access, setAccess] = useState<AccessState | null>(null)
   const [users, setUsers] = useState<User[]>([])
   const [openings, setOpenings] = useState<Opening[]>([])
-  const [selectedUserId, setSelectedUserId] = useState<string>('')
+  const [selectedUserId, setSelectedUserId] = useState('')
   const [newUserName, setNewUserName] = useState('')
+  const [authEmail, setAuthEmail] = useState('')
+  const [authPassword, setAuthPassword] = useState('')
+  const [authMode, setAuthMode] = useState<'sign_in' | 'sign_up'>('sign_up')
   const [game, setGame] = useState<GameView | null>(null)
   const [humanColor, setHumanColor] = useState<'white' | 'black'>('white')
   const [gameMode, setGameMode] = useState<GameMode>('act_as_ai')
-  const [selectedOpeningId, setSelectedOpeningId] = useState<string>('')
+  const [selectedOpeningId, setSelectedOpeningId] = useState('')
   const [isBoardFlipped, setIsBoardFlipped] = useState(false)
   const [optimisticFen, setOptimisticFen] = useState<string | null>(null)
   const [selectedSquare, setSelectedSquare] = useState<string | null>(null)
   const [evaluation, setEvaluation] = useState<Evaluation | null>(null)
-  const [loadingUsers, setLoadingUsers] = useState(true)
+  const [loadingApp, setLoadingApp] = useState(true)
   const [submitting, setSubmitting] = useState(false)
-  const [message, setMessage] = useState<string>('')
-  const [error, setError] = useState<string>('')
+  const [message, setMessage] = useState('')
+  const [error, setError] = useState('')
 
   const selectedUser = useMemo(
     () => users.find((user) => user.id === selectedUserId) ?? null,
@@ -272,6 +297,35 @@ function App() {
       setSelectedOpeningId('')
     }
   }, [availableOpenings, selectedOpeningId])
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const openingData = await api.getOpenings()
+        setOpenings(openingData.openings)
+
+        try {
+          const me = await api.me()
+          setAccount(me.account)
+          setUsers(me.users)
+          setAccess(me.access)
+          if (me.users[0]) {
+            setSelectedUserId(me.users[0].id)
+          }
+        } catch {
+          setAccount(null)
+          setUsers([])
+          setAccess(null)
+        }
+      } catch (caughtError) {
+        setError(
+          caughtError instanceof Error ? caughtError.message : 'Failed to load app.',
+        )
+      } finally {
+        setLoadingApp(false)
+      }
+    })()
+  }, [])
 
   const boardFen = optimisticFen ?? game?.fen ?? undefined
   const boardChess = useMemo(() => {
@@ -317,39 +371,69 @@ function App() {
     setSelectedSquare(null)
   }, [game?.id, game?.fen, optimisticFen, submitting])
 
-  useEffect(() => {
-    void (async () => {
-      try {
-        const data = await api.getUsers()
-        const openingData = await api.getOpenings()
-        setUsers(data.users)
-        setOpenings(openingData.openings)
-        if (data.users[0]) {
-          setSelectedUserId(data.users[0].id)
-        }
-      } catch (caughtError) {
-        setError(
-          caughtError instanceof Error
-            ? caughtError.message
-            : 'Failed to load profiles.',
-        )
-      } finally {
-        setLoadingUsers(false)
-      }
-    })()
-  }, [])
-
-  async function refreshUsers(selectId?: string) {
-    const data = await api.getUsers()
+  function applyAuthState(data: AuthResponse | MeResponse) {
+    setAccount(data.account)
     setUsers(data.users)
-    if (selectId) {
-      setSelectedUserId(selectId)
-      return
-    }
+    setAccess(data.access)
+    setSelectedUserId((current) =>
+      data.users.some((user) => user.id === current)
+        ? current
+        : (data.users[0]?.id ?? ''),
+    )
+  }
 
-    if (!selectedUserId && data.users[0]) {
-      setSelectedUserId(data.users[0].id)
+  async function handleAuth(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setSubmitting(true)
+    setError('')
+
+    try {
+      const data =
+        authMode === 'sign_up'
+          ? await api.signUp(authEmail, authPassword)
+          : await api.signIn(authEmail, authPassword)
+      applyAuthState(data)
+      setGame(null)
+      setEvaluation(null)
+      setMessage(
+        authMode === 'sign_up'
+          ? 'Account created. You can now create profiles and play.'
+          : `Signed in as ${data.account.email}.`,
+      )
+      setAuthPassword('')
+    } catch (caughtError) {
+      setError(
+        caughtError instanceof Error ? caughtError.message : 'Authentication failed.',
+      )
+    } finally {
+      setSubmitting(false)
     }
+  }
+
+  async function handleSignOut() {
+    setSubmitting(true)
+    setError('')
+    try {
+      await api.signOut()
+      setAccount(null)
+      setAccess(null)
+      setUsers([])
+      setSelectedUserId('')
+      setGame(null)
+      setEvaluation(null)
+      setMessage('Signed out.')
+    } catch (caughtError) {
+      setError(
+        caughtError instanceof Error ? caughtError.message : 'Could not sign out.',
+      )
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  async function refreshAccount() {
+    const me = await api.me()
+    applyAuthState(me)
   }
 
   async function handleCreateUser(event: FormEvent<HTMLFormElement>) {
@@ -365,11 +449,12 @@ function App() {
 
     try {
       const data = await api.createUser(trimmedName)
-      await refreshUsers(data.user.id)
+      await refreshAccount()
       setNewUserName('')
       setGame(null)
       setEvaluation(null)
-      setMessage(`Created profile for ${data.user.name}.`)
+      setAccess(data.access)
+      setMessage(`Created profile for ${trimmedName}.`)
     } catch (caughtError) {
       setError(
         caughtError instanceof Error
@@ -400,14 +485,15 @@ function App() {
       )
       setGame(data.game)
       setEvaluation(data.evaluation)
+      setAccess(data.access)
+      await refreshAccount()
       setMessage(
-        data.game.openingName
-          ? `${data.user.name} started with ${data.game.openingName}.`
-          : gameMode === 'act_as_ai'
-            ? `${data.user.name} is now playing in Best Move mode.`
-            : `${data.user.name} is now facing Oscar at adaptive rating ${data.user.targetAiRating}.`,
+        data.game.mode === 'act_as_ai'
+          ? 'Premium Best Move game started.'
+          : data.access.plan === 'free'
+            ? `Oscar Lite started. ${data.access.remainingFreeGamesToday ?? 0} free games left today.`
+            : `${data.user.name} started an adaptive premium game.`,
       )
-      await refreshUsers(data.user.id)
     } catch (caughtError) {
       setError(
         caughtError instanceof Error
@@ -432,12 +518,13 @@ function App() {
       const data = await api.resign(game.id)
       setGame(data.game)
       setEvaluation(data.evaluation)
+      setAccess(data.access)
+      await refreshAccount()
       setMessage(
-        game.mode === 'act_as_ai'
-          ? `${data.user.name}'s profile rating was unchanged in Best Move mode.`
-          : `${data.user.name}'s adaptive rating is now ${data.user.targetAiRating}.`,
+        data.game.mode === 'act_as_ai'
+          ? 'Best Move game finished. Premium rating is unchanged.'
+          : `${formatResult(data.game)}. Adaptive rating is now ${data.user.targetAiRating}.`,
       )
-      await refreshUsers(data.user.id)
     } catch (caughtError) {
       setError(
         caughtError instanceof Error ? caughtError.message : 'Failed to resign.',
@@ -466,16 +553,17 @@ function App() {
       const data = await api.makeMove(game.id, from, to)
       setGame(data.game)
       setEvaluation(data.evaluation)
+      setAccess(data.access)
+      await refreshAccount()
       setMessage(
         data.game.status === 'active'
           ? data.game.mode === 'act_as_ai'
-            ? `${data.user.name} is receiving Stockfish's strongest replies.`
-            : `${data.user.name}'s target rating remains ${data.user.targetAiRating}.`
+            ? 'Stockfish returned its strongest reply.'
+            : `Oscar Lite remains capped at ${data.access.maxAdaptiveRating}.`
           : data.game.mode === 'act_as_ai'
-            ? `${formatResult(data.game)}. Profile rating unchanged in Best Move mode.`
+            ? `${formatResult(data.game)}. Premium Best Move complete.`
             : `${formatResult(data.game)}. Adaptive rating: ${data.user.targetAiRating}.`,
       )
-      await refreshUsers(data.user.id)
     } catch (caughtError) {
       setError(
         caughtError instanceof Error ? caughtError.message : 'Move rejected.',
@@ -499,8 +587,8 @@ function App() {
       const data = await api.undo(game.id)
       setGame(data.game)
       setEvaluation(data.evaluation)
+      setAccess(data.access)
       setMessage('Last turn undone.')
-      await refreshUsers(data.user.id)
     } catch (caughtError) {
       setError(
         caughtError instanceof Error
@@ -508,6 +596,34 @@ function App() {
           : 'Failed to undo the last turn.',
       )
     } finally {
+      setSubmitting(false)
+    }
+  }
+
+  async function handleUpgrade() {
+    setSubmitting(true)
+    setError('')
+    try {
+      const data = await api.createCheckoutSession()
+      window.location.href = data.url
+    } catch (caughtError) {
+      setError(
+        caughtError instanceof Error ? caughtError.message : 'Could not open checkout.',
+      )
+      setSubmitting(false)
+    }
+  }
+
+  async function handleManageBilling() {
+    setSubmitting(true)
+    setError('')
+    try {
+      const data = await api.createCustomerPortal()
+      window.location.href = data.url
+    } catch (caughtError) {
+      setError(
+        caughtError instanceof Error ? caughtError.message : 'Could not open billing.',
+      )
       setSubmitting(false)
     }
   }
@@ -569,7 +685,7 @@ function App() {
       : {}),
     ...Object.fromEntries(
       legalTargets.map((square) => {
-        const occupied = Boolean(boardChess?.get(square))
+        const occupied = Boolean(boardChess?.get(square as Square))
         return [
           square,
           occupied
@@ -595,40 +711,123 @@ function App() {
           : `No legal moves from ${selectedSquare}.`
         : 'Tap a piece to reveal its legal moves.'
 
+  if (loadingApp) {
+    return (
+      <main className="shell">
+        <section className="hero-panel">
+          <div className="hero-copy">
+            <p className="eyebrow">Oscar Chess Workspace</p>
+            <h1>Loading Oscar...</h1>
+          </div>
+        </section>
+      </main>
+    )
+  }
+
+  if (!account || !access) {
+    return (
+      <main className="shell">
+        <section className="hero-panel">
+          <div className="hero-copy">
+            <p className="eyebrow">Oscar Chess Workspace</p>
+            <h1>Chess AI with a free Lite tier and premium Stockfish Best Move.</h1>
+            <p className="hero-text">
+              Create an account to play Oscar Lite for free, then upgrade for
+              strongest-move Stockfish and unlimited games.
+            </p>
+          </div>
+
+          <div className="panel auth-panel">
+            <div className="auth-toggle">
+              <button
+                className={authMode === 'sign_up' ? 'primary' : 'secondary'}
+                type="button"
+                onClick={() => setAuthMode('sign_up')}
+              >
+                Sign up
+              </button>
+              <button
+                className={authMode === 'sign_in' ? 'primary' : 'secondary'}
+                type="button"
+                onClick={() => setAuthMode('sign_in')}
+              >
+                Sign in
+              </button>
+            </div>
+
+            <form className="stack" onSubmit={handleAuth}>
+              <label className="field">
+                <span>Email</span>
+                <input
+                  type="email"
+                  value={authEmail}
+                  onChange={(event) => setAuthEmail(event.target.value)}
+                  placeholder="you@example.com"
+                />
+              </label>
+              <label className="field">
+                <span>Password</span>
+                <input
+                  type="password"
+                  value={authPassword}
+                  onChange={(event) => setAuthPassword(event.target.value)}
+                  placeholder="At least 8 characters"
+                />
+              </label>
+              <button className="primary" disabled={submitting}>
+                {authMode === 'sign_up' ? 'Create account' : 'Sign in'}
+              </button>
+            </form>
+
+            <div className="tier-list">
+              <div className="tier-card">
+                <span>Free</span>
+                <strong>Oscar Lite</strong>
+                <small>Adaptive play capped at about 2000 with daily game limits.</small>
+              </div>
+              <div className="tier-card premium-tier">
+                <span>Premium</span>
+                <strong>$1.99/month</strong>
+                <small>Unlock Best Move Stockfish and unlimited games.</small>
+              </div>
+            </div>
+
+            {error ? <p className="banner error">{error}</p> : null}
+            {message ? <p className="banner info">{message}</p> : null}
+          </div>
+        </section>
+      </main>
+    )
+  }
+
   return (
     <main className="shell">
       <section className="hero-panel">
         <div className="hero-copy">
           <p className="eyebrow">Oscar Chess Workspace</p>
-          <h1>Board-first chess with openings, engine control, and best-move play.</h1>
+          <h1>Free Oscar Lite on one side. Premium Stockfish Best Move on the other.</h1>
           <p className="hero-text">
-            Pick a profile, choose how the engine behaves, and keep the board as
-            the center of attention.
+            Signed in as {account.email}. Free stays capped and metered. Premium
+            unlocks strongest play and unlimited sessions.
           </p>
         </div>
 
         <div className="hero-stats">
           <div className="stat-card">
-            <span>Profiles</span>
-            <strong>{users.length}</strong>
+            <span>Plan</span>
+            <strong>{access.plan === 'premium' ? 'Premium' : 'Free'}</strong>
           </div>
           <div className="stat-card">
-            <span>{gameMode === 'act_as_ai' ? 'Mode' : 'Selected Rating'}</span>
+            <span>Free Games Left</span>
             <strong>
-              {gameMode === 'act_as_ai'
-                ? 'Best Move'
-                : selectedUser?.targetAiRating ?? 100}
+              {access.remainingFreeGamesToday == null
+                ? 'Unlimited'
+                : access.remainingFreeGamesToday}
             </strong>
           </div>
           <div className="stat-card">
-            <span>Engine</span>
-            <strong>
-              {game?.openingName ??
-                game?.engineLabel ??
-                (gameMode === 'act_as_ai'
-                  ? 'Stockfish 18 Best Move'
-                  : 'Stockfish 18 Lite')}
-            </strong>
+            <span>Adaptive Cap</span>
+            <strong>{access.maxAdaptiveRating}</strong>
           </div>
         </div>
       </section>
@@ -637,8 +836,56 @@ function App() {
         <aside className="sidebar">
           <div className="panel">
             <div className="panel-heading">
+              <h2>Account</h2>
+              <p>{account.email}</p>
+            </div>
+
+            <div className="account-meta">
+              <span className={`plan-pill ${access.plan}`}>
+                {access.plan === 'premium' ? 'Premium' : 'Free'}
+              </span>
+              <span className="muted">
+                {access.remainingFreeGamesToday == null
+                  ? 'Unlimited games'
+                  : `${access.remainingFreeGamesToday}/${access.freeDailyGameCap} free games left today`}
+              </span>
+            </div>
+
+            <div className="action-row stacked-actions">
+              {access.plan === 'premium' ? (
+                <button
+                  className="primary"
+                  type="button"
+                  disabled={submitting}
+                  onClick={handleManageBilling}
+                >
+                  Manage billing
+                </button>
+              ) : (
+                <button
+                  className="primary"
+                  type="button"
+                  disabled={submitting}
+                  onClick={handleUpgrade}
+                >
+                  {access.upgradeCtaLabel ?? 'Upgrade'}
+                </button>
+              )}
+              <button
+                className="secondary"
+                type="button"
+                disabled={submitting}
+                onClick={handleSignOut}
+              >
+                Sign out
+              </button>
+            </div>
+          </div>
+
+          <div className="panel">
+            <div className="panel-heading">
               <h2>Profiles</h2>
-              <p>Separate adaptive ladders for each local player.</p>
+              <p>Profiles now live inside your account.</p>
             </div>
 
             <form className="stack" onSubmit={handleCreateUser}>
@@ -657,9 +904,7 @@ function App() {
             </form>
 
             <div className="profile-list">
-              {loadingUsers ? (
-                <p className="muted">Loading profiles...</p>
-              ) : users.length === 0 ? (
+              {users.length === 0 ? (
                 <p className="muted">No profiles yet.</p>
               ) : (
                 users.map((user) => (
@@ -690,7 +935,10 @@ function App() {
           <div className="panel">
             <div className="panel-heading">
               <h2>Match Setup</h2>
-              <p>Human vs AI only, no clock, with adaptive or best-move play.</p>
+              <p>
+                Free uses Oscar Lite. Premium unlocks strongest Best Move and
+                unlimited access.
+              </p>
             </div>
 
             <div className="setup-fields">
@@ -738,14 +986,20 @@ function App() {
             </label>
 
             <p className="setup-hint">
-              AI side: {aiSide}. Only matching openings are shown.
+              {gameMode === 'act_as_ai' && !access.canUseBestMove
+                ? 'Best Move is premium. Upgrade to unlock full Stockfish play.'
+                : `AI side: ${aiSide}. Only matching openings are shown.`}
             </p>
 
             <div className="action-row">
               <button
                 className="primary"
                 onClick={handleStartGame}
-                disabled={!selectedUserId || submitting}
+                disabled={
+                  !selectedUserId ||
+                  submitting ||
+                  (gameMode === 'act_as_ai' && !access.canUseBestMove)
+                }
                 type="button"
               >
                 New game
@@ -760,13 +1014,28 @@ function App() {
                 Resign
               </button>
             </div>
+
+            {gameMode === 'act_as_ai' && !access.canUseBestMove ? (
+              <button
+                className="secondary full-width"
+                type="button"
+                disabled={submitting}
+                onClick={handleUpgrade}
+              >
+                Upgrade for Best Move
+              </button>
+            ) : null}
           </div>
 
           {selectedUser ? (
             <div className="panel">
               <div className="panel-heading">
                 <h2>{selectedUser.name}</h2>
-                <p>Current adaptive difficulty profile.</p>
+                <p>
+                  {access.plan === 'premium'
+                    ? 'Premium adaptive profile.'
+                    : `Free profile capped at ${access.maxAdaptiveRating}.`}
+                </p>
               </div>
 
               <dl className="stats-grid">
@@ -902,13 +1171,11 @@ function App() {
                     ? game.openingName
                       ? formatOpeningStatus(game)
                       : game.mode === 'act_as_ai'
-                        ? 'Best Move mode active'
-                        : `Adaptive rating ${game.adaptiveRating}`
+                        ? 'Premium Best Move active'
+                        : `Adaptive rating ${game.adaptiveRating} / cap ${access.maxAdaptiveRating}`
                     : 'Start a game to load the board'}
                 </span>
-                <span>
-                  {submitting ? 'Submitting move...' : boardHint}
-                </span>
+                <span>{submitting ? 'Submitting move...' : boardHint}</span>
               </div>
               <div className="toolbar-actions">
                 <button
@@ -935,34 +1202,28 @@ function App() {
           <div className="panel">
             <div className="panel-heading">
               <h2>Game Feed</h2>
-              <p>Move list, rating shifts, and position metadata.</p>
+              <p>Move list, plan gating, and position metadata.</p>
             </div>
 
             <div className="result-card">
               <div>
-                <span>{game?.openingName ? 'Opening' : 'Starting rating'}</span>
+                <span>Plan</span>
+                <strong>{access.plan === 'premium' ? 'Premium' : 'Free'}</strong>
+              </div>
+              <div>
+                <span>{game?.mode === 'act_as_ai' ? 'Engine' : 'Adaptive cap'}</span>
                 <strong>
-                  {game?.openingName
-                    ? game.openingName
-                    : game?.mode === 'act_as_ai'
-                    ? 'N/A'
-                    : game?.startingRating ?? selectedUser?.targetAiRating ?? 100}
+                  {game?.mode === 'act_as_ai'
+                    ? 'Stockfish'
+                    : access.maxAdaptiveRating}
                 </strong>
               </div>
               <div>
-                <span>{game?.mode === 'act_as_ai' ? 'Profile rating' : 'Current rating'}</span>
-                <strong>{selectedUser?.targetAiRating ?? 100}</strong>
-              </div>
-              <div>
-                <span>{game?.mode === 'act_as_ai' ? 'Rating impact' : 'Last delta'}</span>
+                <span>Games left today</span>
                 <strong>
-                  {game?.mode === 'act_as_ai'
-                    ? 'None'
-                    : game?.ratingDelta == null
-                    ? 'Pending'
-                    : game.ratingDelta >= 0
-                      ? `+${game.ratingDelta}`
-                      : `${game.ratingDelta}`}
+                  {access.remainingFreeGamesToday == null
+                    ? 'Unlimited'
+                    : access.remainingFreeGamesToday}
                 </strong>
               </div>
             </div>

@@ -1,8 +1,11 @@
-import express from 'express'
+import express, { type Request, type Response } from 'express'
 import { Chess } from 'chess.js'
 import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
+import { authenticateAccount, createSessionForAccount, getAuthenticatedAccount, registerAccount, signOut } from './auth.js'
+import { createCheckoutUrl, createPortalUrl, constructStripeEvent, isBillingConfigured, applyStripeSubscriptionUpdate } from './billing.js'
 import { analyzePosition, chooseEngineMove } from './engine.js'
+import { consumeGameStart, buildAccessState } from './entitlements.js'
 import {
   getOpeningById,
   listOpenings,
@@ -11,13 +14,15 @@ import {
 import {
   createGame,
   createUser,
+  getAccountById,
   getGame,
   getUser,
-  listUsers,
+  listUsersForAccount,
   updateGame,
   updateUser,
 } from './store.js'
 import type {
+  AccountRecord,
   GameMode,
   GameRecord,
   GameResult,
@@ -37,6 +42,76 @@ const dataDirectory = process.env.DATA_DIR
   ? resolve(process.env.DATA_DIR)
   : resolve(projectRoot, 'data')
 
+app.post(
+  '/api/stripe/webhook',
+  express.raw({ type: 'application/json' }),
+  async (request, response) => {
+    try {
+      const signature = request.headers['stripe-signature']
+      if (typeof signature !== 'string') {
+        response.status(400).json({ error: 'Missing Stripe signature.' })
+        return
+      }
+
+      const event = constructStripeEvent(request.body as Buffer, signature)
+
+      if (event.type === 'checkout.session.completed') {
+        const session = event.data.object
+        const accountId =
+          typeof session.metadata?.accountId === 'string'
+            ? session.metadata.accountId
+            : typeof session.client_reference_id === 'string'
+              ? session.client_reference_id
+              : ''
+
+        if (accountId) {
+          await applyStripeSubscriptionUpdate(accountId, {
+            plan: 'premium',
+            subscriptionStatus: 'active',
+            stripeCustomerId:
+              typeof session.customer === 'string' ? session.customer : null,
+            stripeSubscriptionId:
+              typeof session.subscription === 'string' ? session.subscription : null,
+          })
+        }
+      }
+
+      if (
+        event.type === 'customer.subscription.updated' ||
+        event.type === 'customer.subscription.created' ||
+        event.type === 'customer.subscription.deleted'
+      ) {
+        const subscription = event.data.object
+        const accountId =
+          typeof subscription.metadata?.accountId === 'string'
+            ? subscription.metadata.accountId
+            : ''
+        if (accountId) {
+          const status =
+            subscription.status === 'active' || subscription.status === 'trialing'
+              ? subscription.status
+              : subscription.status === 'past_due'
+                ? 'past_due'
+                : 'canceled'
+          await applyStripeSubscriptionUpdate(accountId, {
+            plan: status === 'active' || status === 'trialing' ? 'premium' : 'free',
+            subscriptionStatus: status,
+            stripeCustomerId:
+              typeof subscription.customer === 'string' ? subscription.customer : null,
+            stripeSubscriptionId: subscription.id,
+          })
+        }
+      }
+
+      response.json({ received: true })
+    } catch (error) {
+      response.status(400).json({
+        error: error instanceof Error ? error.message : 'Webhook failed.',
+      })
+    }
+  },
+)
+
 app.use(express.json())
 
 app.get('/healthz', (_request, response) => {
@@ -44,6 +119,7 @@ app.get('/healthz', (_request, response) => {
     ok: true,
     port,
     dataDir: dataDirectory,
+    billingConfigured: isBillingConfigured(),
   })
 })
 
@@ -91,30 +167,6 @@ function shouldAffectRating(mode: GameMode) {
   return mode === 'adaptive'
 }
 
-function updateUserForResult(
-  currentUser: Awaited<ReturnType<typeof getUser>> extends infer R
-    ? NonNullable<R>
-    : never,
-  result: Exclude<GameResult, null>,
-) {
-  const now = new Date().toISOString()
-  const ratingDelta = calculateRatingDelta(currentUser.targetAiRating, result)
-  const nextRating = clamp(currentUser.targetAiRating + ratingDelta, 100, 3200)
-
-  return {
-    user: {
-      ...currentUser,
-      targetAiRating: nextRating,
-      gamesPlayed: currentUser.gamesPlayed + 1,
-      wins: currentUser.wins + (result === 'human_win' ? 1 : 0),
-      losses: currentUser.losses + (result === 'ai_win' ? 1 : 0),
-      draws: currentUser.draws + (result === 'draw' ? 1 : 0),
-      updatedAt: now,
-    },
-    ratingDelta,
-  }
-}
-
 function sideToColor(turn: 'w' | 'b'): PlayerColor {
   return turn === 'w' ? 'white' : 'black'
 }
@@ -145,55 +197,6 @@ function evaluateTerminalState(chess: Chess, humanColor: PlayerColor) {
   return null
 }
 
-async function finalizeGame(
-  game: GameRecord,
-  result: Exclude<GameResult, null>,
-  status: GameStatus,
-) {
-  const user = await getUser(game.userId)
-  if (!user) {
-    throw new Error('Profile not found.')
-  }
-
-  if (!shouldAffectRating(game.mode)) {
-    const updatedGame = await updateGame(game.id, (currentGame) => ({
-      ...currentGame,
-      status,
-      result,
-      ratingDelta: null,
-      updatedAt: new Date().toISOString(),
-    }))
-
-    return { user, game: updatedGame }
-  }
-
-  const { user: nextUser, ratingDelta } = updateUserForResult(user, result)
-  const updatedUser = await updateUser(user.id, () => nextUser)
-  const updatedGame = await updateGame(game.id, (currentGame) => ({
-    ...currentGame,
-    status,
-    result,
-    ratingDelta,
-    updatedAt: new Date().toISOString(),
-  }))
-
-  return { user: updatedUser, game: updatedGame }
-}
-
-async function buildGameResponse(game: GameRecord, user: UserRecord) {
-  const evaluation = await analyzePosition(game.fen)
-  return { game, user, evaluation }
-}
-
-function canUndoGame(game: GameRecord) {
-  if (game.status !== 'active') {
-    return false
-  }
-
-  const rollbackPlyCount = game.humanColor === 'black' ? 2 : 2
-  return game.moveHistory.length >= rollbackPlyCount + (game.humanColor === 'black' ? 1 : 0)
-}
-
 function rebuildPgnFromMoves(moves: MoveEntry[]) {
   const chess = new Chess()
 
@@ -212,9 +215,187 @@ function rebuildPgnFromMoves(moves: MoveEntry[]) {
   return chess.pgn()
 }
 
-app.get('/api/users', async (_request, response) => {
-  const users = await listUsers()
-  response.json({ users })
+function canUndoGame(game: GameRecord) {
+  if (game.status !== 'active') {
+    return false
+  }
+
+  return game.moveHistory.length >= (game.humanColor === 'black' ? 3 : 2)
+}
+
+async function requireAccount(request: Request, response: Response) {
+  const auth = await getAuthenticatedAccount(request)
+  if (!auth) {
+    response.status(401).json({ error: 'Sign in required.' })
+    return null
+  }
+
+  const state = await buildAccessState(auth.account)
+  return { account: state.account, access: state.access }
+}
+
+async function loadAccountScopedUser(accountId: string, userId: string) {
+  const user = await getUser(userId)
+  if (!user || user.accountId !== accountId) {
+    return null
+  }
+
+  return user
+}
+
+async function updateUserForResult(
+  currentUser: UserRecord,
+  result: Exclude<GameResult, null>,
+  maxAdaptiveRating: number,
+) {
+  const now = new Date().toISOString()
+  const ratingDelta = calculateRatingDelta(currentUser.targetAiRating, result)
+  const nextRating = clamp(currentUser.targetAiRating + ratingDelta, 100, maxAdaptiveRating)
+
+  return {
+    user: {
+      ...currentUser,
+      targetAiRating: nextRating,
+      gamesPlayed: currentUser.gamesPlayed + 1,
+      wins: currentUser.wins + (result === 'human_win' ? 1 : 0),
+      losses: currentUser.losses + (result === 'ai_win' ? 1 : 0),
+      draws: currentUser.draws + (result === 'draw' ? 1 : 0),
+      updatedAt: now,
+    },
+    ratingDelta,
+  }
+}
+
+async function finalizeGame(
+  game: GameRecord,
+  result: Exclude<GameResult, null>,
+  status: GameStatus,
+) {
+  const user = await getUser(game.userId)
+  if (!user) {
+    throw new Error('Profile not found.')
+  }
+
+  const account = await getAccountById(user.accountId)
+  if (!account) {
+    throw new Error('Account not found.')
+  }
+
+  const { access } = await buildAccessState(account)
+
+  if (!shouldAffectRating(game.mode)) {
+    const updatedGame = await updateGame(game.id, (currentGame) => ({
+      ...currentGame,
+      status,
+      result,
+      ratingDelta: null,
+      updatedAt: new Date().toISOString(),
+    }))
+
+    return { user, game: updatedGame, account, access }
+  }
+
+  const { user: nextUser, ratingDelta } = await updateUserForResult(
+    user,
+    result,
+    access.maxAdaptiveRating,
+  )
+  const updatedUser = await updateUser(user.id, () => nextUser)
+  const updatedGame = await updateGame(game.id, (currentGame) => ({
+    ...currentGame,
+    status,
+    result,
+    ratingDelta,
+    updatedAt: new Date().toISOString(),
+  }))
+
+  return { user: updatedUser, game: updatedGame, account, access }
+}
+
+async function buildGameResponse(game: GameRecord, user: UserRecord, account: AccountRecord) {
+  const evaluation = await analyzePosition(game.fen)
+  const { access } = await buildAccessState(account)
+  return { game, user, evaluation, access }
+}
+
+app.post('/api/auth/sign-up', async (request, response) => {
+  try {
+    const email = typeof request.body?.email === 'string' ? request.body.email : ''
+    const password =
+      typeof request.body?.password === 'string' ? request.body.password : ''
+    const account = await registerAccount(email, password)
+    await createSessionForAccount(account.id, response)
+    const users = await listUsersForAccount(account.id)
+    const { access } = await buildAccessState(account)
+    response.status(201).json({
+      account: {
+        id: account.id,
+        email: account.email,
+      },
+      users,
+      access,
+    })
+  } catch (error) {
+    response.status(400).json({
+      error: error instanceof Error ? error.message : 'Could not create account.',
+    })
+  }
+})
+
+app.post('/api/auth/sign-in', async (request, response) => {
+  try {
+    const email = typeof request.body?.email === 'string' ? request.body.email : ''
+    const password =
+      typeof request.body?.password === 'string' ? request.body.password : ''
+    const account = await authenticateAccount(email, password)
+    await createSessionForAccount(account.id, response)
+    const users = await listUsersForAccount(account.id)
+    const { access } = await buildAccessState(account)
+    response.json({
+      account: {
+        id: account.id,
+        email: account.email,
+      },
+      users,
+      access,
+    })
+  } catch (error) {
+    response.status(401).json({
+      error: error instanceof Error ? error.message : 'Could not sign in.',
+    })
+  }
+})
+
+app.post('/api/auth/sign-out', async (request, response) => {
+  await signOut(request, response)
+  response.status(204).end()
+})
+
+app.get('/api/me', async (request, response) => {
+  const state = await requireAccount(request, response)
+  if (!state) {
+    return
+  }
+
+  const users = await listUsersForAccount(state.account.id)
+  response.json({
+    account: {
+      id: state.account.id,
+      email: state.account.email,
+    },
+    users,
+    access: state.access,
+  })
+})
+
+app.get('/api/users', async (request, response) => {
+  const state = await requireAccount(request, response)
+  if (!state) {
+    return
+  }
+
+  const users = await listUsersForAccount(state.account.id)
+  response.json({ users, access: state.access })
 })
 
 app.get('/api/openings', async (_request, response) => {
@@ -223,10 +404,15 @@ app.get('/api/openings', async (_request, response) => {
 
 app.post('/api/users', async (request, response) => {
   try {
+    const state = await requireAccount(request, response)
+    if (!state) {
+      return
+    }
+
     const name =
       typeof request.body?.name === 'string' ? request.body.name : ''
-    const user = await createUser(name)
-    response.status(201).json({ user })
+    const user = await createUser(state.account.id, name)
+    response.status(201).json({ user, access: state.access })
   } catch (error) {
     response.status(400).json({
       error: error instanceof Error ? error.message : 'Could not create profile.',
@@ -234,21 +420,64 @@ app.post('/api/users', async (request, response) => {
   }
 })
 
+app.post('/api/billing/create-checkout-session', async (request, response) => {
+  try {
+    const state = await requireAccount(request, response)
+    if (!state) {
+      return
+    }
+
+    const url = await createCheckoutUrl(state.account)
+    response.json({ url })
+  } catch (error) {
+    response.status(400).json({
+      error: error instanceof Error ? error.message : 'Could not start checkout.',
+    })
+  }
+})
+
+app.post('/api/billing/customer-portal', async (request, response) => {
+  try {
+    const state = await requireAccount(request, response)
+    if (!state) {
+      return
+    }
+
+    const url = await createPortalUrl(state.account)
+    response.json({ url })
+  } catch (error) {
+    response.status(400).json({
+      error: error instanceof Error ? error.message : 'Could not open billing portal.',
+    })
+  }
+})
+
 app.post('/api/games', async (request, response) => {
   try {
+    const state = await requireAccount(request, response)
+    if (!state) {
+      return
+    }
+
     const userId =
       typeof request.body?.userId === 'string' ? request.body.userId : ''
     const humanColor = request.body?.humanColor === 'black' ? 'black' : 'white'
-    const mode: GameMode =
+    const requestedMode: GameMode =
       request.body?.mode === 'act_as_ai' ? 'act_as_ai' : 'adaptive'
     const openingId =
       typeof request.body?.openingId === 'string' ? request.body.openingId : null
-    const user = await getUser(userId)
+    const user = await loadAccountScopedUser(state.account.id, userId)
+
     if (!user) {
       response.status(404).json({ error: 'Profile not found.' })
       return
     }
 
+    const nextState = await consumeGameStart(state.account, requestedMode)
+    const effectiveMode =
+      nextState.access.canUseBestMove && requestedMode === 'act_as_ai'
+        ? 'act_as_ai'
+        : 'adaptive'
     const aiColor: PlayerColor = humanColor === 'white' ? 'black' : 'white'
     const opening = getOpeningById(openingId)
     if (opening && opening.side !== aiColor) {
@@ -260,10 +489,11 @@ app.post('/api/games', async (request, response) => {
 
     const chess = new Chess()
     const now = new Date().toISOString()
+    const targetRating = clamp(user.targetAiRating, 100, nextState.access.maxAdaptiveRating)
     const game: GameRecord = {
       id: crypto.randomUUID(),
       userId: user.id,
-      mode,
+      mode: effectiveMode,
       openingId: opening?.id ?? null,
       openingName: opening?.name ?? null,
       openingSide: opening?.side ?? null,
@@ -276,10 +506,11 @@ app.post('/api/games', async (request, response) => {
       pgn: '',
       moveHistory: [],
       positionHistory: [chess.fen()],
-      adaptiveRating: user.targetAiRating,
-      startingRating: user.targetAiRating,
+      adaptiveRating: targetRating,
+      startingRating: targetRating,
       ratingDelta: null,
-      engineLabel: 'Stockfish 18 Lite',
+      engineLabel:
+        effectiveMode === 'act_as_ai' ? 'Stockfish 18 Best Move' : 'Oscar Lite',
       createdAt: now,
       updatedAt: now,
     }
@@ -292,8 +523,8 @@ app.post('/api/games', async (request, response) => {
         openingProgress.nextMove ??
         (
           await chooseEngineMove(chess.fen(), {
-            mode,
-            targetAiRating: user.targetAiRating,
+            mode: effectiveMode,
+            targetAiRating: targetRating,
           })
         ).move
       const engineMove = chess.move(selectedMove)
@@ -312,7 +543,7 @@ app.post('/api/games', async (request, response) => {
           ? `${currentGame.openingName} Book`
           : currentGame.mode === 'act_as_ai'
             ? 'Stockfish 18 Best Move'
-            : 'Stockfish 18 Lite',
+            : 'Oscar Lite',
         openingStatus: resolveOpeningProgress(
           currentGame.openingId,
           [
@@ -329,7 +560,8 @@ app.post('/api/games', async (request, response) => {
       }))
     }
 
-    response.status(201).json(await buildGameResponse(persisted, user))
+    const latestUser = (await getUser(user.id)) ?? user
+    response.status(201).json(await buildGameResponse(persisted, latestUser, nextState.account))
   } catch (error) {
     response.status(400).json({
       error: error instanceof Error ? error.message : 'Could not start game.',
@@ -339,8 +571,19 @@ app.post('/api/games', async (request, response) => {
 
 app.post('/api/games/:gameId/move', async (request, response) => {
   try {
+    const state = await requireAccount(request, response)
+    if (!state) {
+      return
+    }
+
     const game = await getGame(request.params.gameId)
     if (!game) {
+      response.status(404).json({ error: 'Game not found.' })
+      return
+    }
+
+    const gameUser = await getUser(game.userId)
+    if (!gameUser || gameUser.accountId !== state.account.id) {
       response.status(404).json({ error: 'Game not found.' })
       return
     }
@@ -397,7 +640,7 @@ app.post('/api/games/:gameId/move', async (request, response) => {
         terminalAfterHuman.result,
         terminalAfterHuman.status,
       )
-      response.json(await buildGameResponse(finalized.game, finalized.user))
+      response.json(await buildGameResponse(finalized.game, finalized.user, finalized.account))
       return
     }
 
@@ -448,7 +691,7 @@ app.post('/api/games/:gameId/move', async (request, response) => {
         terminalAfterAi.result,
         terminalAfterAi.status,
       )
-      response.json(await buildGameResponse(finalized.game, finalized.user))
+      response.json(await buildGameResponse(finalized.game, finalized.user, finalized.account))
       return
     }
 
@@ -457,7 +700,7 @@ app.post('/api/games/:gameId/move', async (request, response) => {
       throw new Error('Profile not found.')
     }
 
-    response.json(await buildGameResponse(updatedGame, user))
+    response.json(await buildGameResponse(updatedGame, user, state.account))
   } catch (error) {
     response.status(400).json({
       error: error instanceof Error ? error.message : 'Move failed.',
@@ -467,8 +710,19 @@ app.post('/api/games/:gameId/move', async (request, response) => {
 
 app.post('/api/games/:gameId/undo', async (request, response) => {
   try {
+    const state = await requireAccount(request, response)
+    if (!state) {
+      return
+    }
+
     const game = await getGame(request.params.gameId)
     if (!game) {
+      response.status(404).json({ error: 'Game not found.' })
+      return
+    }
+
+    const gameUser = await getUser(game.userId)
+    if (!gameUser || gameUser.accountId !== state.account.id) {
       response.status(404).json({ error: 'Game not found.' })
       return
     }
@@ -478,9 +732,8 @@ app.post('/api/games/:gameId/undo', async (request, response) => {
       return
     }
 
-    const undoCount = 2
-    const nextMoveHistory = game.moveHistory.slice(0, -undoCount)
-    const nextPositionHistory = game.positionHistory.slice(0, -undoCount)
+    const nextMoveHistory = game.moveHistory.slice(0, -2)
+    const nextPositionHistory = game.positionHistory.slice(0, -2)
     const restoredFen = nextPositionHistory.at(-1)
 
     if (!restoredFen) {
@@ -507,17 +760,12 @@ app.post('/api/games/:gameId/undo', async (request, response) => {
             ? `${nextOpeningProgress.openingName} Book`
             : currentGame.mode === 'act_as_ai'
               ? 'Stockfish 18 Best Move'
-              : 'Stockfish 18 Lite',
+              : 'Oscar Lite',
         updatedAt: new Date().toISOString(),
       }
     })
 
-    const user = await getUser(updatedGame.userId)
-    if (!user) {
-      throw new Error('Profile not found.')
-    }
-
-    response.json(await buildGameResponse(updatedGame, user))
+    response.json(await buildGameResponse(updatedGame, gameUser, state.account))
   } catch (error) {
     response.status(400).json({
       error: error instanceof Error ? error.message : 'Could not undo the last turn.',
@@ -527,8 +775,19 @@ app.post('/api/games/:gameId/undo', async (request, response) => {
 
 app.post('/api/games/:gameId/resign', async (request, response) => {
   try {
+    const state = await requireAccount(request, response)
+    if (!state) {
+      return
+    }
+
     const game = await getGame(request.params.gameId)
     if (!game) {
+      response.status(404).json({ error: 'Game not found.' })
+      return
+    }
+
+    const gameUser = await getUser(game.userId)
+    if (!gameUser || gameUser.accountId !== state.account.id) {
       response.status(404).json({ error: 'Game not found.' })
       return
     }
@@ -539,7 +798,7 @@ app.post('/api/games/:gameId/resign', async (request, response) => {
     }
 
     const finalized = await finalizeGame(game, 'ai_win', 'resigned')
-    response.json(await buildGameResponse(finalized.game, finalized.user))
+    response.json(await buildGameResponse(finalized.game, finalized.user, finalized.account))
   } catch (error) {
     response.status(400).json({
       error: error instanceof Error ? error.message : 'Could not resign.',
@@ -559,4 +818,7 @@ app.listen(port, host, () => {
   console.log(`Oscar server listening on http://${host}:${port}`)
   console.log(`Serving frontend from ${distDir}`)
   console.log(`Using data directory ${dataDirectory}`)
+  if (process.env.STRIPE_SECRET_KEY) {
+    console.log('Stripe billing enabled')
+  }
 })
