@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { FormEvent } from 'react'
 import { Chess } from 'chess.js'
+import type { Move, Square } from 'chess.js'
 import { Chessboard } from 'react-chessboard'
 import './App.css'
 
@@ -221,6 +222,19 @@ function formatOpeningStatus(game: GameView | null) {
   return `${game.openingName} broken, engine continued normally`
 }
 
+function isHumanOwnedSquare(
+  chess: Chess | null,
+  square: string,
+  humanColor: 'white' | 'black',
+) {
+  const piece = chess?.get(square as Square)
+  if (!piece) {
+    return false
+  }
+
+  return piece.color === (humanColor === 'white' ? 'w' : 'b')
+}
+
 function App() {
   const [users, setUsers] = useState<User[]>([])
   const [openings, setOpenings] = useState<Opening[]>([])
@@ -232,6 +246,7 @@ function App() {
   const [selectedOpeningId, setSelectedOpeningId] = useState<string>('')
   const [isBoardFlipped, setIsBoardFlipped] = useState(false)
   const [optimisticFen, setOptimisticFen] = useState<string | null>(null)
+  const [selectedSquare, setSelectedSquare] = useState<string | null>(null)
   const [evaluation, setEvaluation] = useState<Evaluation | null>(null)
   const [loadingUsers, setLoadingUsers] = useState(true)
   const [submitting, setSubmitting] = useState(false)
@@ -243,6 +258,7 @@ function App() {
     [selectedUserId, users],
   )
   const aiSide = humanColor === 'white' ? 'black' : 'white'
+  const activeHumanColor = game?.humanColor ?? humanColor
   const availableOpenings = useMemo(
     () => openings.filter((opening) => opening.side === aiSide),
     [aiSide, openings],
@@ -258,6 +274,13 @@ function App() {
   }, [availableOpenings, selectedOpeningId])
 
   const boardFen = optimisticFen ?? game?.fen ?? undefined
+  const boardChess = useMemo(() => {
+    if (!boardFen) {
+      return null
+    }
+
+    return new Chess(boardFen)
+  }, [boardFen])
   const baseOrientation = game?.humanColor ?? humanColor
   const boardOrientation =
     isBoardFlipped
@@ -282,6 +305,17 @@ function App() {
       !submitting &&
       game.moveHistory.length >= (game.humanColor === 'black' ? 3 : 2)
     : false
+  const legalTargets =
+    canInteract && selectedSquare && boardChess
+      ? (boardChess.moves({
+          square: selectedSquare as Square,
+          verbose: true,
+        }) as Move[]).map((move) => move.to)
+      : []
+
+  useEffect(() => {
+    setSelectedSquare(null)
+  }, [game?.id, game?.fen, optimisticFen, submitting])
 
   useEffect(() => {
     void (async () => {
@@ -478,19 +512,88 @@ function App() {
     }
   }
 
-  const lastMove = game?.moveHistory.at(-1)
-  const squareStyles = lastMove
-    ? {
-        [lastMove.from]: {
-          background:
-            'linear-gradient(180deg, rgba(255, 217, 102, 0.48), rgba(255, 181, 71, 0.2))',
-        },
-        [lastMove.to]: {
-          background:
-            'linear-gradient(180deg, rgba(255, 217, 102, 0.72), rgba(255, 181, 71, 0.38))',
-        },
+  function handleSquarePress(square: string) {
+    if (!game || !boardChess || !canInteract) {
+      setSelectedSquare(null)
+      return
+    }
+
+    if (!selectedSquare) {
+      if (isHumanOwnedSquare(boardChess, square, game.humanColor)) {
+        setSelectedSquare(square)
       }
-    : undefined
+      return
+    }
+
+    if (square === selectedSquare) {
+      setSelectedSquare(null)
+      return
+    }
+
+    if (legalTargets.includes(square as Square)) {
+      setSelectedSquare(null)
+      void submitMove(selectedSquare, square)
+      return
+    }
+
+    if (isHumanOwnedSquare(boardChess, square, game.humanColor)) {
+      setSelectedSquare(square)
+      return
+    }
+
+    setSelectedSquare(null)
+  }
+
+  const lastMove = game?.moveHistory.at(-1)
+  const squareStyles = {
+    ...(lastMove
+      ? {
+          [lastMove.from]: {
+            background:
+              'linear-gradient(180deg, rgba(255, 217, 102, 0.48), rgba(255, 181, 71, 0.2))',
+          },
+          [lastMove.to]: {
+            background:
+              'linear-gradient(180deg, rgba(255, 217, 102, 0.72), rgba(255, 181, 71, 0.38))',
+          },
+        }
+      : {}),
+    ...(selectedSquare
+      ? {
+          [selectedSquare]: {
+            background:
+              'linear-gradient(180deg, rgba(130, 220, 116, 0.42), rgba(74, 195, 113, 0.22))',
+            boxShadow: 'inset 0 0 0 3px rgba(60, 168, 84, 0.9)',
+          },
+        }
+      : {}),
+    ...Object.fromEntries(
+      legalTargets.map((square) => {
+        const occupied = Boolean(boardChess?.get(square))
+        return [
+          square,
+          occupied
+            ? {
+                background:
+                  'radial-gradient(circle, rgba(107, 213, 120, 0.06) 0%, rgba(107, 213, 120, 0.06) 58%, rgba(61, 179, 86, 0.92) 59%, rgba(61, 179, 86, 0.92) 72%, rgba(61, 179, 86, 0.18) 73%, rgba(61, 179, 86, 0.18) 100%)',
+              }
+            : {
+                background:
+                  'radial-gradient(circle, rgba(61, 179, 86, 0.92) 0%, rgba(61, 179, 86, 0.92) 16%, rgba(61, 179, 86, 0.24) 17%, rgba(61, 179, 86, 0.24) 100%)',
+              },
+        ]
+      }),
+    ),
+  }
+  const boardHint = !game
+    ? 'Start a game to load the board.'
+    : !canInteract
+      ? 'Wait for Oscar to reply.'
+      : selectedSquare
+        ? legalTargets.length
+          ? `Tap a highlighted square to move ${selectedSquare}.`
+          : `No legal moves from ${selectedSquare}.`
+        : 'Tap a piece to reveal its legal moves.'
 
   return (
     <main className="shell">
@@ -743,6 +846,7 @@ function App() {
               </div>
 
               <div className="board-shell">
+                <div className="mobile-board-hint">{boardHint}</div>
                 <Chessboard
                   options={{
                     id: 'oscar-board',
@@ -750,17 +854,34 @@ function App() {
                     boardOrientation,
                     squareStyles,
                     animationDurationInMs: 180,
+                    allowDragging: canInteract,
+                    canDragPiece: ({ square }) =>
+                      Boolean(
+                        canInteract &&
+                          square &&
+                          isHumanOwnedSquare(boardChess, square, activeHumanColor),
+                      ),
+                    onPieceClick: ({ square }) => {
+                      if (!square) {
+                        return
+                      }
+                      handleSquarePress(square)
+                    },
+                    onSquareClick: ({ square }) => {
+                      handleSquarePress(square)
+                    },
                     onPieceDrop: ({ sourceSquare, targetSquare }) => {
                       if (!targetSquare || !canInteract) {
                         return false
                       }
 
+                      setSelectedSquare(null)
                       void submitMove(sourceSquare, targetSquare)
                       return true
                     },
                     boardStyle: {
-                      borderRadius: '22px',
-                      boxShadow: '0 20px 60px rgba(17, 18, 24, 0.24)',
+                      borderRadius: '20px',
+                      boxShadow: '0 18px 42px rgba(17, 18, 24, 0.18)',
                     },
                     darkSquareStyle: {
                       backgroundColor: '#7f4f24',
@@ -786,7 +907,7 @@ function App() {
                     : 'Start a game to load the board'}
                 </span>
                 <span>
-                  {submitting ? 'Submitting move...' : game?.engineLabel ?? ''}
+                  {submitting ? 'Submitting move...' : boardHint}
                 </span>
               </div>
               <div className="toolbar-actions">
