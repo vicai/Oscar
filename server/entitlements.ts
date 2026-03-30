@@ -1,5 +1,5 @@
 import { updateAccount } from './store.js'
-import type { AccountRecord, GameMode } from './types.js'
+import type { AccountRecord } from './types.js'
 
 export const FREE_DAILY_GAME_CAP = Number(process.env.FREE_DAILY_GAME_CAP ?? 5)
 export const FREE_RATING_CAP = Number(process.env.FREE_RATING_CAP ?? 2000)
@@ -47,21 +47,17 @@ export async function buildAccessState(account: AccountRecord) {
     access: {
       plan: premium ? 'premium' : 'free',
       subscriptionStatus: premium ? 'active' : freshAccount.subscriptionStatus,
-      canUseBestMove: premium,
+      canUseBestMove: true,
       maxAdaptiveRating: premium ? 3200 : FREE_RATING_CAP,
       freeDailyGameCap: FREE_DAILY_GAME_CAP,
       remainingFreeGamesToday,
-      upgradeCtaLabel: premium ? null : '$1.99/month for Stockfish Best Move',
+      upgradeCtaLabel: premium ? null : '$1.99/month for unlimited games and stronger adaptive play',
     },
   }
 }
 
-export async function consumeGameStart(account: AccountRecord, mode: GameMode) {
+export async function consumeGameStart(account: AccountRecord) {
   const { account: freshAccount, access } = await buildAccessState(account)
-
-  if (mode === 'act_as_ai' && !access.canUseBestMove) {
-    throw new Error('Best Move is a premium feature. Upgrade to unlock full Stockfish play.')
-  }
 
   if (access.plan === 'free' && (access.remainingFreeGamesToday ?? 0) <= 0) {
     throw new Error('Free plan daily game cap reached. Upgrade to keep playing.')

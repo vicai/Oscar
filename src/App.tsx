@@ -589,7 +589,9 @@ function App() {
       await refreshAccount()
       setMessage(
         data.game.mode === 'act_as_ai'
-          ? 'Premium Best Move game started.'
+          ? data.access.plan === 'premium'
+            ? 'Premium Best Move game started.'
+            : `Free Best Move game started. ${data.access.remainingFreeGamesToday ?? 0} free games left today.`
           : data.access.plan === 'free'
             ? `Oscar Lite started. ${data.access.remainingFreeGamesToday ?? 0} free games left today.`
             : `${data.user.name} started an adaptive premium game.`,
@@ -622,7 +624,9 @@ function App() {
       await refreshAccount()
       setMessage(
         data.game.mode === 'act_as_ai'
-          ? 'Best Move game finished. Premium rating is unchanged.'
+          ? data.access.plan === 'premium'
+            ? 'Best Move game finished. Premium rating is unchanged.'
+            : 'Best Move game finished.'
           : `${formatResult(data.game)}. Adaptive rating is now ${data.user.targetAiRating}.`,
       )
     } catch (caughtError) {
@@ -661,7 +665,7 @@ function App() {
             ? 'Stockfish returned its strongest reply.'
             : `Oscar Lite remains capped at ${data.access.maxAdaptiveRating}.`
           : data.game.mode === 'act_as_ai'
-            ? `${formatResult(data.game)}. Premium Best Move complete.`
+            ? `${formatResult(data.game)}. Best Move complete.`
             : `${formatResult(data.game)}. Adaptive rating: ${data.user.targetAiRating}.`,
       )
     } catch (caughtError) {
@@ -846,10 +850,10 @@ function App() {
         <section className="hero-panel">
           <div className="hero-copy">
             <p className="eyebrow">Oscar Chess Workspace</p>
-            <h1>Chess AI with a free Lite tier and premium Stockfish Best Move.</h1>
+            <h1>Chess AI with free Best Move play and a premium unlimited tier.</h1>
             <p className="hero-text">
               Create an account to sync progress and unlock premium. Free Oscar
-              Lite can also be played as a guest.
+              Lite and Best Move can also be played as a guest.
             </p>
           </div>
 
@@ -899,12 +903,12 @@ function App() {
               <div className="tier-card">
                 <span>Free</span>
                 <strong>Oscar Lite</strong>
-                <small>Playable as guest. Adaptive play capped at about 2000 with daily game limits.</small>
+                <small>Playable as guest. Includes Best Move, with a 5-game daily cap and adaptive capped around 2000.</small>
               </div>
               <div className="tier-card premium-tier">
                 <span>Premium</span>
                 <strong>$1.99/month</strong>
-                <small>Unlock Best Move Stockfish and unlimited games.</small>
+                <small>Unlimited games and stronger adaptive play.</small>
               </div>
             </div>
 
@@ -921,10 +925,9 @@ function App() {
       <section className="hero-panel">
         <div className="hero-copy">
           <p className="eyebrow">Oscar Chess Workspace</p>
-          <h1>Free Oscar Lite on one side. Premium Stockfish Best Move on the other.</h1>
+          <h1>Free Best Move and Lite play, with premium for unlimited access.</h1>
           <p className="hero-text">
-            Signed in as {account.email}. Free stays capped and metered. Premium
-            unlocks strongest play and unlimited sessions.
+            Signed in as {account.isGuest ? 'guest' : account.email}. Free stays capped and metered. Premium unlocks unlimited sessions and stronger adaptive play.
           </p>
         </div>
 
@@ -1100,8 +1103,7 @@ function App() {
             <div className="panel-heading">
               <h2>Match Setup</h2>
               <p>
-                Free uses Oscar Lite. Premium unlocks strongest Best Move and
-                unlimited access.
+                Free includes Best Move and Lite play with a daily cap. Premium removes the cap and raises adaptive strength.
               </p>
             </div>
 
@@ -1166,8 +1168,8 @@ function App() {
             </label>
 
             <p className="setup-hint">
-              {gameMode === 'act_as_ai' && !access.canUseBestMove
-                ? 'Best Move is premium. Upgrade to unlock full Stockfish play.'
+              {access.plan === 'free'
+                ? `Free plan: up to ${access.freeDailyGameCap} games/day. Adaptive caps at ${access.maxAdaptiveRating}.`
                 : `AI side: ${aiSide}. Only matching openings are shown.`}
             </p>
 
@@ -1175,11 +1177,7 @@ function App() {
               <button
                 className="primary"
                 onClick={handleStartGame}
-                disabled={
-                  !selectedUserId ||
-                  submitting ||
-                  (gameMode === 'act_as_ai' && !access.canUseBestMove)
-                }
+                disabled={!selectedUserId || submitting}
                 type="button"
               >
                 New game
@@ -1194,15 +1192,14 @@ function App() {
                 Resign
               </button>
             </div>
-
-            {gameMode === 'act_as_ai' && !access.canUseBestMove ? (
+            {access.plan === 'free' ? (
               <button
                 className="secondary full-width"
                 type="button"
-                disabled={submitting}
+                disabled={submitting || account.isGuest}
                 onClick={handleUpgrade}
               >
-                Upgrade for Best Move
+                Upgrade for unlimited games
               </button>
             ) : null}
           </div>
@@ -1361,7 +1358,7 @@ function App() {
                     ? game.openingName
                       ? formatOpeningStatus(game)
                       : game.mode === 'act_as_ai'
-                        ? 'Premium Best Move active'
+                        ? 'Best Move active'
                         : `Adaptive rating ${game.adaptiveRating} / cap ${access.maxAdaptiveRating}`
                     : 'Start a game to load the board'}
                 </span>

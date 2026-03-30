@@ -583,11 +583,8 @@ app.post('/api/games', async (request, response) => {
       return
     }
 
-    const nextState = await consumeGameStart(state.account, requestedMode)
-    const effectiveMode =
-      nextState.access.canUseBestMove && requestedMode === 'act_as_ai'
-        ? 'act_as_ai'
-        : 'adaptive'
+    const nextState = await consumeGameStart(state.account)
+    const effectiveMode = requestedMode
     const aiColor: PlayerColor = humanColor === 'white' ? 'black' : 'white'
     const opening = getOpeningById(openingId)
     if (opening && opening.side !== aiColor) {
