@@ -36,6 +36,7 @@ export type Evaluation = {
 export type AccountRecord = {
   id: string
   email: string
+  isGuest: boolean
   passwordHash: string
   passwordSalt: string
   plan: AccountPlan

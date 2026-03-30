@@ -21,6 +21,10 @@ export function isBillingConfigured() {
 }
 
 export async function createCheckoutUrl(account: AccountRecord) {
+  if (account.isGuest) {
+    throw new Error('Create an account before upgrading to premium.')
+  }
+
   const stripe = getStripeClient()
   if (stripe && premiumPriceId) {
     const session = await stripe.checkout.sessions.create({
@@ -55,6 +59,10 @@ export async function createCheckoutUrl(account: AccountRecord) {
 }
 
 export async function createPortalUrl(account: AccountRecord) {
+  if (account.isGuest) {
+    throw new Error('Guest sessions do not have billing access.')
+  }
+
   const stripe = getStripeClient()
   if (stripe && account.stripeCustomerId) {
     const session = await stripe.billingPortal.sessions.create({

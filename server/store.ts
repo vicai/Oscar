@@ -53,6 +53,7 @@ function normalizeAccountRecord(
   return {
     id: account.id,
     email: account.email.toLowerCase(),
+    isGuest: account.isGuest ?? false,
     passwordHash: account.passwordHash ?? '',
     passwordSalt: account.passwordSalt ?? '',
     plan: (account.plan ?? 'free') as AccountPlan,

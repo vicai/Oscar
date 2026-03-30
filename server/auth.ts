@@ -60,8 +60,32 @@ export async function registerAccount(email: string, password: string) {
   const account: AccountRecord = {
     id: crypto.randomUUID(),
     email: normalizedEmail,
+    isGuest: false,
     passwordHash,
     passwordSalt: salt,
+    plan: 'free',
+    subscriptionStatus: 'inactive',
+    stripeCustomerId: null,
+    stripeSubscriptionId: null,
+    gamesUsedToday: 0,
+    usageWindowStartedAt: now,
+    createdAt: now,
+    updatedAt: now,
+  }
+
+  return createAccount(account)
+}
+
+export async function createGuestAccount() {
+  const now = new Date().toISOString()
+  const id = crypto.randomUUID()
+
+  const account: AccountRecord = {
+    id,
+    email: `guest+${id}@oscar.local`,
+    isGuest: true,
+    passwordHash: '',
+    passwordSalt: '',
     plan: 'free',
     subscriptionStatus: 'inactive',
     stripeCustomerId: null,

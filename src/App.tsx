@@ -8,6 +8,7 @@ import './App.css'
 type Account = {
   id: string
   email: string
+  isGuest: boolean
 }
 
 type AccessState = {
@@ -121,6 +122,11 @@ async function apiRequest<T>(input: RequestInfo, init?: RequestInit) {
 const api = {
   me() {
     return apiRequest<MeResponse>('/api/me')
+  },
+  ensureGuestSession() {
+    return apiRequest<MeResponse>('/api/guest/session', {
+      method: 'POST',
+    })
   },
   signUp(email: string, password: string) {
     return apiRequest<AuthResponse>('/api/auth/sign-up', {
@@ -313,9 +319,13 @@ function App() {
             setSelectedUserId(me.users[0].id)
           }
         } catch {
-          setAccount(null)
-          setUsers([])
-          setAccess(null)
+          const guest = await api.ensureGuestSession()
+          setAccount(guest.account)
+          setUsers(guest.users)
+          setAccess(guest.access)
+          if (guest.users[0]) {
+            setSelectedUserId(guest.users[0].id)
+          }
         }
       } catch (caughtError) {
         setError(
@@ -415,13 +425,11 @@ function App() {
     setError('')
     try {
       await api.signOut()
-      setAccount(null)
-      setAccess(null)
-      setUsers([])
-      setSelectedUserId('')
+      const guest = await api.ensureGuestSession()
+      applyAuthState(guest)
       setGame(null)
       setEvaluation(null)
-      setMessage('Signed out.')
+      setMessage('Signed out. Guest play is still available.')
     } catch (caughtError) {
       setError(
         caughtError instanceof Error ? caughtError.message : 'Could not sign out.',
@@ -601,6 +609,11 @@ function App() {
   }
 
   async function handleUpgrade() {
+    if (account?.isGuest) {
+      setError('Create an account or sign in before upgrading to premium.')
+      return
+    }
+
     setSubmitting(true)
     setError('')
     try {
@@ -615,6 +628,11 @@ function App() {
   }
 
   async function handleManageBilling() {
+    if (account?.isGuest) {
+      setError('Guest sessions do not have billing access.')
+      return
+    }
+
     setSubmitting(true)
     setError('')
     try {
@@ -732,8 +750,8 @@ function App() {
             <p className="eyebrow">Oscar Chess Workspace</p>
             <h1>Chess AI with a free Lite tier and premium Stockfish Best Move.</h1>
             <p className="hero-text">
-              Create an account to play Oscar Lite for free, then upgrade for
-              strongest-move Stockfish and unlimited games.
+              Create an account to sync progress and unlock premium. Free Oscar
+              Lite can also be played as a guest.
             </p>
           </div>
 
@@ -783,7 +801,7 @@ function App() {
               <div className="tier-card">
                 <span>Free</span>
                 <strong>Oscar Lite</strong>
-                <small>Adaptive play capped at about 2000 with daily game limits.</small>
+                <small>Playable as guest. Adaptive play capped at about 2000 with daily game limits.</small>
               </div>
               <div className="tier-card premium-tier">
                 <span>Premium</span>
@@ -837,7 +855,7 @@ function App() {
           <div className="panel">
             <div className="panel-heading">
               <h2>Account</h2>
-              <p>{account.email}</p>
+              <p>{account.isGuest ? 'Guest session' : account.email}</p>
             </div>
 
             <div className="account-meta">
@@ -851,35 +869,83 @@ function App() {
               </span>
             </div>
 
-            <div className="action-row stacked-actions">
-              {access.plan === 'premium' ? (
+            {account.isGuest ? (
+              <div className="stack">
+                <p className="setup-hint">
+                  Guest play is enabled. Sign in or create an account to keep a
+                  real identity and upgrade to premium.
+                </p>
+                <div className="auth-toggle">
+                  <button
+                    className={authMode === 'sign_up' ? 'primary' : 'secondary'}
+                    type="button"
+                    onClick={() => setAuthMode('sign_up')}
+                  >
+                    Sign up
+                  </button>
+                  <button
+                    className={authMode === 'sign_in' ? 'primary' : 'secondary'}
+                    type="button"
+                    onClick={() => setAuthMode('sign_in')}
+                  >
+                    Sign in
+                  </button>
+                </div>
+                <form className="stack" onSubmit={handleAuth}>
+                  <label className="field">
+                    <span>Email</span>
+                    <input
+                      type="email"
+                      value={authEmail}
+                      onChange={(event) => setAuthEmail(event.target.value)}
+                      placeholder="you@example.com"
+                    />
+                  </label>
+                  <label className="field">
+                    <span>Password</span>
+                    <input
+                      type="password"
+                      value={authPassword}
+                      onChange={(event) => setAuthPassword(event.target.value)}
+                      placeholder="At least 8 characters"
+                    />
+                  </label>
+                  <button className="primary" disabled={submitting}>
+                    {authMode === 'sign_up' ? 'Create account' : 'Sign in'}
+                  </button>
+                </form>
+              </div>
+            ) : (
+              <div className="action-row stacked-actions">
+                {access.plan === 'premium' ? (
+                  <button
+                    className="primary"
+                    type="button"
+                    disabled={submitting}
+                    onClick={handleManageBilling}
+                  >
+                    Manage billing
+                  </button>
+                ) : (
+                  <button
+                    className="primary"
+                    type="button"
+                    disabled={submitting}
+                    onClick={handleUpgrade}
+                  >
+                    {access.upgradeCtaLabel ?? 'Upgrade'}
+                  </button>
+                )}
                 <button
-                  className="primary"
+                  className="secondary"
                   type="button"
                   disabled={submitting}
-                  onClick={handleManageBilling}
+                  onClick={handleSignOut}
                 >
-                  Manage billing
+                  Sign out
                 </button>
-              ) : (
-                <button
-                  className="primary"
-                  type="button"
-                  disabled={submitting}
-                  onClick={handleUpgrade}
-                >
-                  {access.upgradeCtaLabel ?? 'Upgrade'}
-                </button>
-              )}
-              <button
-                className="secondary"
-                type="button"
-                disabled={submitting}
-                onClick={handleSignOut}
-              >
-                Sign out
-              </button>
-            </div>
+              </div>
+            )}
           </div>
 
           <div className="panel">
@@ -1032,9 +1098,11 @@ function App() {
               <div className="panel-heading">
                 <h2>{selectedUser.name}</h2>
                 <p>
-                  {access.plan === 'premium'
-                    ? 'Premium adaptive profile.'
-                    : `Free profile capped at ${access.maxAdaptiveRating}.`}
+                  {account.isGuest
+                    ? `Guest profile capped at ${access.maxAdaptiveRating}.`
+                    : access.plan === 'premium'
+                      ? 'Premium adaptive profile.'
+                      : `Free profile capped at ${access.maxAdaptiveRating}.`}
                 </p>
               </div>
 

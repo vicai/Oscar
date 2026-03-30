@@ -2,7 +2,7 @@ import express, { type Request, type Response } from 'express'
 import { Chess } from 'chess.js'
 import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { authenticateAccount, createSessionForAccount, getAuthenticatedAccount, registerAccount, signOut } from './auth.js'
+import { authenticateAccount, createGuestAccount, createSessionForAccount, getAuthenticatedAccount, registerAccount, signOut } from './auth.js'
 import { createCheckoutUrl, createPortalUrl, constructStripeEvent, isBillingConfigured, applyStripeSubscriptionUpdate } from './billing.js'
 import { analyzePosition, chooseEngineMove } from './engine.js'
 import { consumeGameStart, buildAccessState } from './entitlements.js'
@@ -331,6 +331,7 @@ app.post('/api/auth/sign-up', async (request, response) => {
       account: {
         id: account.id,
         email: account.email,
+        isGuest: account.isGuest,
       },
       users,
       access,
@@ -355,6 +356,7 @@ app.post('/api/auth/sign-in', async (request, response) => {
       account: {
         id: account.id,
         email: account.email,
+        isGuest: account.isGuest,
       },
       users,
       access,
@@ -371,6 +373,44 @@ app.post('/api/auth/sign-out', async (request, response) => {
   response.status(204).end()
 })
 
+app.post('/api/guest/session', async (request, response) => {
+  try {
+    const existing = await getAuthenticatedAccount(request)
+    if (existing) {
+      const users = await listUsersForAccount(existing.account.id)
+      const { access } = await buildAccessState(existing.account)
+      response.json({
+        account: {
+          id: existing.account.id,
+          email: existing.account.email,
+          isGuest: existing.account.isGuest,
+        },
+        users,
+        access,
+      })
+      return
+    }
+
+    const account = await createGuestAccount()
+    await createSessionForAccount(account.id, response)
+    const users = await listUsersForAccount(account.id)
+    const { access } = await buildAccessState(account)
+    response.status(201).json({
+      account: {
+        id: account.id,
+        email: account.email,
+        isGuest: account.isGuest,
+      },
+      users,
+      access,
+    })
+  } catch (error) {
+    response.status(400).json({
+      error: error instanceof Error ? error.message : 'Could not start guest session.',
+    })
+  }
+})
+
 app.get('/api/me', async (request, response) => {
   const state = await requireAccount(request, response)
   if (!state) {
@@ -382,6 +422,7 @@ app.get('/api/me', async (request, response) => {
     account: {
       id: state.account.id,
       email: state.account.email,
+      isGuest: state.account.isGuest,
     },
     users,
     access: state.access,
