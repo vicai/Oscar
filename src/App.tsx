@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { Chess } from 'chess.js'
 import type { Move, Square } from 'chess.js'
@@ -297,7 +297,6 @@ function App() {
   const [timeControl, setTimeControl] = useState<TimeControlPreset>('15_10')
   const [selectedOpeningId, setSelectedOpeningId] = useState('')
   const [isBoardFlipped, setIsBoardFlipped] = useState(false)
-  const [optimisticFen, setOptimisticFen] = useState<string | null>(null)
   const [selectedSquare, setSelectedSquare] = useState<string | null>(null)
   const [evaluation, setEvaluation] = useState<Evaluation | null>(null)
   const [loadingApp, setLoadingApp] = useState(true)
@@ -306,6 +305,8 @@ function App() {
   const [error, setError] = useState('')
   const [clockNow, setClockNow] = useState(Date.now())
   const [flaggingGameId, setFlaggingGameId] = useState<string | null>(null)
+  const boardFrameRef = useRef<HTMLDivElement | null>(null)
+  const [boardPixelSize, setBoardPixelSize] = useState(640)
 
   const selectedUser = useMemo(
     () => users.find((user) => user.id === selectedUserId) ?? null,
@@ -360,7 +361,7 @@ function App() {
     })()
   }, [])
 
-  const boardFen = optimisticFen ?? game?.fen ?? undefined
+  const boardFen = game?.fen ?? undefined
   const boardChess = useMemo(() => {
     if (!boardFen) {
       return null
@@ -403,7 +404,25 @@ function App() {
 
   useEffect(() => {
     setSelectedSquare(null)
-  }, [game?.id, game?.fen, optimisticFen, submitting])
+  }, [game?.id, game?.fen, submitting])
+
+  useEffect(() => {
+    const frame = boardFrameRef.current
+    if (!frame) {
+      return
+    }
+
+    const syncBoardSize = () => {
+      const width = Math.max(320, Math.floor(frame.clientWidth / 8) * 8)
+      setBoardPixelSize(width)
+    }
+
+    syncBoardSize()
+    const observer = new ResizeObserver(syncBoardSize)
+    observer.observe(frame)
+
+    return () => observer.disconnect()
+  }, [])
 
   useEffect(() => {
     const interval = window.setInterval(() => {
@@ -572,7 +591,6 @@ function App() {
     }
 
     setSubmitting(true)
-    setOptimisticFen(null)
     setError('')
 
     try {
@@ -614,7 +632,6 @@ function App() {
 
     setSubmitting(true)
     setError('')
-    setOptimisticFen(null)
 
     try {
       const data = await api.resign(game.id)
@@ -644,14 +661,12 @@ function App() {
     }
 
     const localChess = new Chess(game.fen)
-    const movedPiece = localChess.move({ from, to, promotion: 'q' })
-    if (!movedPiece) {
+    if (!localChess.move({ from, to, promotion: 'q' })) {
       return
     }
 
     setSubmitting(true)
     setError('')
-    setOptimisticFen(localChess.fen())
 
     try {
       const data = await api.makeMove(game.id, from, to)
@@ -673,7 +688,6 @@ function App() {
         caughtError instanceof Error ? caughtError.message : 'Move rejected.',
       )
     } finally {
-      setOptimisticFen(null)
       setSubmitting(false)
     }
   }
@@ -685,7 +699,6 @@ function App() {
 
     setSubmitting(true)
     setError('')
-    setOptimisticFen(null)
 
     try {
       const data = await api.undo(game.id)
@@ -1294,7 +1307,7 @@ function App() {
                 </div>
               </div>
 
-              <div className="board-shell">
+              <div className="board-shell" ref={boardFrameRef}>
                 {showClocks ? (
                   <div className={`clock-banner ${topClockActive ? 'active' : ''}`}>
                     <span>{topClockLabel}</span>
@@ -1335,8 +1348,10 @@ function App() {
                       return true
                     },
                     boardStyle: {
+                      width: `${boardPixelSize}px`,
                       borderRadius: '20px',
                       boxShadow: '0 18px 42px rgba(17, 18, 24, 0.18)',
+                      backgroundColor: '#7f4f24',
                     },
                     darkSquareStyle: {
                       backgroundColor: '#7f4f24',

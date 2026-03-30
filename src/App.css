@@ -421,6 +421,12 @@ button:disabled {
   margin: 0 auto;
   display: grid;
   gap: 10px;
+  justify-items: center;
+}
+
+#oscar-board-board {
+  overflow: hidden;
+  background: #7f4f24;
 }
 
 .clock-banner {
