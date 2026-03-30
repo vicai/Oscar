@@ -421,6 +421,43 @@ button:disabled {
   margin: 0 auto;
 }
 
+.clock-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: #f7f8fa;
+  border: 1px solid rgba(20, 24, 31, 0.08);
+  color: #454d57;
+}
+
+.clock-banner.bottom {
+  margin-top: 10px;
+  margin-bottom: 0;
+}
+
+.clock-banner span {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #8a6e4e;
+}
+
+.clock-banner strong {
+  font-size: 1.1rem;
+  font-family: var(--heading);
+  color: #22262d;
+}
+
+.clock-banner.active {
+  background: rgba(31, 109, 91, 0.1);
+  border-color: rgba(31, 109, 91, 0.22);
+}
+
 .mobile-board-hint {
   display: none;
 }

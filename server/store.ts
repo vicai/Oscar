@@ -11,6 +11,7 @@ import type {
   PlayerColor,
   SessionRecord,
   SubscriptionStatus,
+  TimeControlPreset,
   UserRecord,
 } from './types.js'
 
@@ -91,7 +92,18 @@ function normalizeUserRecord(
 function normalizeGameRecord(
   game: Omit<
     GameRecord,
-    'mode' | 'positionHistory' | 'openingId' | 'openingName' | 'openingSide' | 'openingStatus'
+    | 'mode'
+    | 'positionHistory'
+    | 'openingId'
+    | 'openingName'
+    | 'openingSide'
+    | 'openingStatus'
+    | 'timeControl'
+    | 'initialTimeMs'
+    | 'incrementMs'
+    | 'whiteTimeMs'
+    | 'blackTimeMs'
+    | 'activeTurnStartedAt'
   > & {
     mode?: GameMode
     positionHistory?: string[]
@@ -99,6 +111,12 @@ function normalizeGameRecord(
     openingName?: string | null
     openingSide?: PlayerColor | null
     openingStatus?: OpeningStatus
+    timeControl?: TimeControlPreset
+    initialTimeMs?: number
+    incrementMs?: number
+    whiteTimeMs?: number
+    blackTimeMs?: number
+    activeTurnStartedAt?: string | null
   },
 ): GameRecord {
   const fallbackHistory =
@@ -109,6 +127,12 @@ function normalizeGameRecord(
   return {
     ...game,
     mode: game.mode ?? 'adaptive',
+    timeControl: game.timeControl ?? '15_0',
+    initialTimeMs: game.initialTimeMs ?? 15 * 60 * 1000,
+    incrementMs: game.incrementMs ?? 0,
+    whiteTimeMs: game.whiteTimeMs ?? game.initialTimeMs ?? 15 * 60 * 1000,
+    blackTimeMs: game.blackTimeMs ?? game.initialTimeMs ?? 15 * 60 * 1000,
+    activeTurnStartedAt: game.activeTurnStartedAt ?? game.createdAt ?? null,
     positionHistory: fallbackHistory,
     openingId: game.openingId ?? null,
     openingName: game.openingName ?? null,

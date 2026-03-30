@@ -15,6 +15,9 @@ export type GameStatus =
   | 'stalemate'
   | 'draw'
   | 'resigned'
+  | 'timeout'
+
+export type TimeControlPreset = '15_0' | '15_10' | '10_0' | '5_0'
 
 export type GameResult = 'human_win' | 'ai_win' | 'draw' | null
 
@@ -73,6 +76,12 @@ export type GameRecord = {
   id: string
   userId: string
   mode: GameMode
+  timeControl: TimeControlPreset
+  initialTimeMs: number
+  incrementMs: number
+  whiteTimeMs: number
+  blackTimeMs: number
+  activeTurnStartedAt: string | null
   openingId: string | null
   openingName: string | null
   openingSide: PlayerColor | null

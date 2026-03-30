@@ -61,11 +61,18 @@ type GameStatus =
   | 'resigned'
 
 type GameMode = 'adaptive' | 'act_as_ai'
+type TimeControlPreset = '15_0' | '15_10' | '10_0' | '5_0'
 
 type GameView = {
   id: string
   userId: string
   mode: GameMode
+  timeControl: TimeControlPreset
+  initialTimeMs: number
+  incrementMs: number
+  whiteTimeMs: number
+  blackTimeMs: number
+  activeTurnStartedAt: string | null
   openingId: string | null
   openingName: string | null
   openingSide: 'white' | 'black' | null
@@ -161,12 +168,13 @@ const api = {
     userId: string,
     humanColor: 'white' | 'black',
     mode: GameMode,
+    timeControl: TimeControlPreset,
     openingId: string | null,
   ) {
     return apiRequest<GameResponse>('/api/games', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userId, humanColor, mode, openingId }),
+      body: JSON.stringify({ userId, humanColor, mode, timeControl, openingId }),
     })
   },
   makeMove(gameId: string, from: string, to: string) {
@@ -183,6 +191,11 @@ const api = {
   },
   undo(gameId: string) {
     return apiRequest<GameResponse>(`/api/games/${gameId}/undo`, {
+      method: 'POST',
+    })
+  },
+  flag(gameId: string) {
+    return apiRequest<GameResponse>(`/api/games/${gameId}/flag`, {
       method: 'POST',
     })
   },
@@ -261,6 +274,13 @@ function isHumanOwnedSquare(
   return piece.color === (humanColor === 'white' ? 'w' : 'b')
 }
 
+function formatClock(ms: number) {
+  const totalSeconds = Math.max(0, Math.ceil(ms / 1000))
+  const minutes = Math.floor(totalSeconds / 60)
+  const seconds = totalSeconds % 60
+  return `${minutes}:${String(seconds).padStart(2, '0')}`
+}
+
 function App() {
   const [account, setAccount] = useState<Account | null>(null)
   const [access, setAccess] = useState<AccessState | null>(null)
@@ -274,6 +294,7 @@ function App() {
   const [game, setGame] = useState<GameView | null>(null)
   const [humanColor, setHumanColor] = useState<'white' | 'black'>('white')
   const [gameMode, setGameMode] = useState<GameMode>('act_as_ai')
+  const [timeControl, setTimeControl] = useState<TimeControlPreset>('15_10')
   const [selectedOpeningId, setSelectedOpeningId] = useState('')
   const [isBoardFlipped, setIsBoardFlipped] = useState(false)
   const [optimisticFen, setOptimisticFen] = useState<string | null>(null)
@@ -283,6 +304,8 @@ function App() {
   const [submitting, setSubmitting] = useState(false)
   const [message, setMessage] = useState('')
   const [error, setError] = useState('')
+  const [clockNow, setClockNow] = useState(Date.now())
+  const [flaggingGameId, setFlaggingGameId] = useState<string | null>(null)
 
   const selectedUser = useMemo(
     () => users.find((user) => user.id === selectedUserId) ?? null,
@@ -369,6 +392,7 @@ function App() {
       !submitting &&
       game.moveHistory.length >= (game.humanColor === 'black' ? 3 : 2)
     : false
+  const activeClockColor = game ? (new Chess(game.fen).turn() === 'w' ? 'white' : 'black') : null
   const legalTargets =
     canInteract && selectedSquare && boardChess
       ? (boardChess.moves({
@@ -380,6 +404,73 @@ function App() {
   useEffect(() => {
     setSelectedSquare(null)
   }, [game?.id, game?.fen, optimisticFen, submitting])
+
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      setClockNow(Date.now())
+    }, 250)
+
+    return () => window.clearInterval(interval)
+  }, [])
+
+  const liveWhiteTimeMs = game
+    ? Math.max(
+        0,
+        game.whiteTimeMs -
+          (game.status === 'active' &&
+          activeClockColor === 'white' &&
+          game.activeTurnStartedAt
+            ? clockNow - new Date(game.activeTurnStartedAt).getTime()
+            : 0),
+      )
+    : 0
+  const liveBlackTimeMs = game
+    ? Math.max(
+        0,
+        game.blackTimeMs -
+          (game.status === 'active' &&
+          activeClockColor === 'black' &&
+          game.activeTurnStartedAt
+            ? clockNow - new Date(game.activeTurnStartedAt).getTime()
+            : 0),
+      )
+    : 0
+
+  useEffect(() => {
+    if (
+      !game ||
+      game.status !== 'active' ||
+      !canInteract ||
+      flaggingGameId === game.id
+    ) {
+      return
+    }
+
+    const humanClockMs =
+      game.humanColor === 'white' ? liveWhiteTimeMs : liveBlackTimeMs
+    if (humanClockMs > 0) {
+      return
+    }
+
+    setFlaggingGameId(game.id)
+    void (async () => {
+      try {
+        const data = await api.flag(game.id)
+        setGame(data.game)
+        setEvaluation(data.evaluation)
+        setAccess(data.access)
+        setMessage('Time expired.')
+      } catch (caughtError) {
+        setError(
+          caughtError instanceof Error
+            ? caughtError.message
+            : 'Failed to flag the clock.',
+        )
+      } finally {
+        setFlaggingGameId(null)
+      }
+    })()
+  }, [canInteract, flaggingGameId, game, liveBlackTimeMs, liveWhiteTimeMs])
 
   function applyAuthState(data: AuthResponse | MeResponse) {
     setAccount(data.account)
@@ -489,6 +580,7 @@ function App() {
         selectedUserId,
         humanColor,
         gameMode,
+        timeControl,
         selectedOpeningId || null,
       )
       setGame(data.game)
@@ -728,6 +820,12 @@ function App() {
           ? `Tap a highlighted square to move ${selectedSquare}.`
           : `No legal moves from ${selectedSquare}.`
         : 'Tap a piece to reveal its legal moves.'
+  const topClockMs = boardOrientation === 'white' ? liveBlackTimeMs : liveWhiteTimeMs
+  const bottomClockMs = boardOrientation === 'white' ? liveWhiteTimeMs : liveBlackTimeMs
+  const topClockLabel = boardOrientation === 'white' ? 'Black' : 'White'
+  const bottomClockLabel = boardOrientation === 'white' ? 'White' : 'Black'
+  const topClockActive = activeClockColor === (boardOrientation === 'white' ? 'black' : 'white')
+  const bottomClockActive = activeClockColor === (boardOrientation === 'white' ? 'white' : 'black')
 
   if (loadingApp) {
     return (
@@ -1033,6 +1131,22 @@ function App() {
                   <option value="black">Black</option>
                 </select>
               </label>
+
+              <label className="field">
+                <span>Clock</span>
+                <select
+                  value={timeControl}
+                  onChange={(event) =>
+                    setTimeControl(event.target.value as TimeControlPreset)
+                  }
+                  disabled={submitting}
+                >
+                  <option value="15_10">15 | 10</option>
+                  <option value="15_0">15 | 0</option>
+                  <option value="10_0">10 | 0</option>
+                  <option value="5_0">5 | 0</option>
+                </select>
+              </label>
             </div>
 
             <label className="field">
@@ -1183,6 +1297,10 @@ function App() {
               </div>
 
               <div className="board-shell">
+                <div className={`clock-banner ${topClockActive ? 'active' : ''}`}>
+                  <span>{topClockLabel}</span>
+                  <strong>{formatClock(topClockMs)}</strong>
+                </div>
                 <div className="mobile-board-hint">{boardHint}</div>
                 <Chessboard
                   options={{
@@ -1229,6 +1347,10 @@ function App() {
                     showNotation: true,
                   }}
                 />
+                <div className={`clock-banner bottom ${bottomClockActive ? 'active' : ''}`}>
+                  <span>{bottomClockLabel}</span>
+                  <strong>{formatClock(bottomClockMs)}</strong>
+                </div>
               </div>
             </div>
 
@@ -1243,7 +1365,13 @@ function App() {
                         : `Adaptive rating ${game.adaptiveRating} / cap ${access.maxAdaptiveRating}`
                     : 'Start a game to load the board'}
                 </span>
-                <span>{submitting ? 'Submitting move...' : boardHint}</span>
+                <span>
+                  {game
+                    ? `Clock ${game.timeControl.replace('_', ' | ')}`
+                    : submitting
+                      ? 'Submitting move...'
+                      : boardHint}
+                </span>
               </div>
               <div className="toolbar-actions">
                 <button

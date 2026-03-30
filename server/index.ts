@@ -29,6 +29,7 @@ import type {
   GameStatus,
   MoveEntry,
   PlayerColor,
+  TimeControlPreset,
   UserRecord,
 } from './types.js'
 
@@ -221,6 +222,66 @@ function canUndoGame(game: GameRecord) {
   }
 
   return game.moveHistory.length >= (game.humanColor === 'black' ? 3 : 2)
+}
+
+function getTimeControlSettings(timeControl: TimeControlPreset) {
+  switch (timeControl) {
+    case '15_10':
+      return { initialTimeMs: 15 * 60 * 1000, incrementMs: 10 * 1000 }
+    case '10_0':
+      return { initialTimeMs: 10 * 60 * 1000, incrementMs: 0 }
+    case '5_0':
+      return { initialTimeMs: 5 * 60 * 1000, incrementMs: 0 }
+    case '15_0':
+    default:
+      return { initialTimeMs: 15 * 60 * 1000, incrementMs: 0 }
+  }
+}
+
+function getActiveColor(game: GameRecord) {
+  const chess = new Chess(game.fen)
+  return sideToColor(chess.turn())
+}
+
+function applyClockTick(
+  game: GameRecord,
+  movingColor: PlayerColor,
+  options?: {
+    completedMove?: boolean
+    nextTurnStartedAt?: string | null
+  },
+) {
+  if (!game.activeTurnStartedAt) {
+    return {
+      ...game,
+      activeTurnStartedAt: options?.nextTurnStartedAt ?? new Date().toISOString(),
+    }
+  }
+
+  const now = options?.nextTurnStartedAt ?? new Date().toISOString()
+  const elapsedMs = Math.max(
+    0,
+    new Date(now).getTime() - new Date(game.activeTurnStartedAt).getTime(),
+  )
+  const nextWhiteTime =
+    movingColor === 'white'
+      ? game.whiteTimeMs - elapsedMs + (options?.completedMove ? game.incrementMs : 0)
+      : game.whiteTimeMs
+  const nextBlackTime =
+    movingColor === 'black'
+      ? game.blackTimeMs - elapsedMs + (options?.completedMove ? game.incrementMs : 0)
+      : game.blackTimeMs
+
+  return {
+    ...game,
+    whiteTimeMs: nextWhiteTime,
+    blackTimeMs: nextBlackTime,
+    activeTurnStartedAt: options?.completedMove ? now : game.activeTurnStartedAt,
+  }
+}
+
+function getFlaggedResult(game: GameRecord, flaggedColor: PlayerColor) {
+  return flaggedColor === game.humanColor ? 'ai_win' : 'human_win'
 }
 
 async function requireAccount(request: Request, response: Response) {
@@ -505,6 +566,14 @@ app.post('/api/games', async (request, response) => {
     const humanColor = request.body?.humanColor === 'black' ? 'black' : 'white'
     const requestedMode: GameMode =
       request.body?.mode === 'act_as_ai' ? 'act_as_ai' : 'adaptive'
+    const timeControl: TimeControlPreset =
+      request.body?.timeControl === '15_10'
+        ? '15_10'
+        : request.body?.timeControl === '10_0'
+          ? '10_0'
+          : request.body?.timeControl === '5_0'
+            ? '5_0'
+            : '15_0'
     const openingId =
       typeof request.body?.openingId === 'string' ? request.body.openingId : null
     const user = await loadAccountScopedUser(state.account.id, userId)
@@ -530,11 +599,18 @@ app.post('/api/games', async (request, response) => {
 
     const chess = new Chess()
     const now = new Date().toISOString()
+    const clock = getTimeControlSettings(timeControl)
     const targetRating = clamp(user.targetAiRating, 100, nextState.access.maxAdaptiveRating)
     const game: GameRecord = {
       id: crypto.randomUUID(),
       userId: user.id,
       mode: effectiveMode,
+      timeControl,
+      initialTimeMs: clock.initialTimeMs,
+      incrementMs: clock.incrementMs,
+      whiteTimeMs: clock.initialTimeMs,
+      blackTimeMs: clock.initialTimeMs,
+      activeTurnStartedAt: now,
       openingId: opening?.id ?? null,
       openingName: opening?.name ?? null,
       openingSide: opening?.side ?? null,
@@ -574,7 +650,10 @@ app.post('/api/games', async (request, response) => {
       }
 
       persisted = await updateGame(game.id, (currentGame) => ({
-        ...currentGame,
+        ...applyClockTick(currentGame, 'white', {
+          completedMove: true,
+          nextTurnStartedAt: new Date().toISOString(),
+        }),
         fen: chess.fen(),
         pgn: rebuildPgnFromMoves([
           ...currentGame.moveHistory,
@@ -641,6 +720,25 @@ app.post('/api/games/:gameId/move', async (request, response) => {
       return
     }
 
+    const timedBeforeMove = applyClockTick(game, currentTurn)
+    if (
+      (currentTurn === 'white' ? timedBeforeMove.whiteTimeMs : timedBeforeMove.blackTimeMs) <=
+      0
+    ) {
+      const flaggedGame = await updateGame(game.id, () => ({
+        ...timedBeforeMove,
+        whiteTimeMs: Math.max(0, timedBeforeMove.whiteTimeMs),
+        blackTimeMs: Math.max(0, timedBeforeMove.blackTimeMs),
+      }))
+      const finalized = await finalizeGame(
+        flaggedGame,
+        getFlaggedResult(flaggedGame, currentTurn),
+        'timeout',
+      )
+      response.json(await buildGameResponse(finalized.game, finalized.user, finalized.account))
+      return
+    }
+
     const from =
       typeof request.body?.from === 'string' ? request.body.from : ''
     const to = typeof request.body?.to === 'string' ? request.body.to : ''
@@ -664,7 +762,10 @@ app.post('/api/games/:gameId/move', async (request, response) => {
       )
 
       return {
-        ...currentGame,
+        ...applyClockTick(currentGame, currentTurn, {
+          completedMove: true,
+          nextTurnStartedAt: new Date().toISOString(),
+        }),
         fen: chess.fen(),
         pgn: rebuildPgnFromMoves(nextMoveHistory),
         moveHistory: nextMoveHistory,
@@ -712,7 +813,10 @@ app.post('/api/games/:gameId/move', async (request, response) => {
       )
 
       return {
-        ...currentGame,
+        ...applyClockTick(currentGame, updatedGame.aiColor, {
+          completedMove: true,
+          nextTurnStartedAt: new Date().toISOString(),
+        }),
         fen: chess.fen(),
         pgn: rebuildPgnFromMoves(nextMoveHistory),
         engineLabel: openingProgress.nextMove
@@ -724,6 +828,23 @@ app.post('/api/games/:gameId/move', async (request, response) => {
         updatedAt: new Date().toISOString(),
       }
     })
+
+    if (
+      (updatedGame.aiColor === 'white' ? updatedGame.whiteTimeMs : updatedGame.blackTimeMs) <=
+      0
+    ) {
+      const finalized = await finalizeGame(
+        {
+          ...updatedGame,
+          whiteTimeMs: Math.max(0, updatedGame.whiteTimeMs),
+          blackTimeMs: Math.max(0, updatedGame.blackTimeMs),
+        },
+        getFlaggedResult(updatedGame, updatedGame.aiColor),
+        'timeout',
+      )
+      response.json(await buildGameResponse(finalized.game, finalized.user, finalized.account))
+      return
+    }
 
     const terminalAfterAi = evaluateTerminalState(chess, updatedGame.humanColor)
     if (terminalAfterAi) {
@@ -794,6 +915,7 @@ app.post('/api/games/:gameId/undo', async (request, response) => {
         pgn: rebuildPgnFromMoves(nextMoveHistory),
         moveHistory: nextMoveHistory,
         positionHistory: nextPositionHistory,
+        activeTurnStartedAt: new Date().toISOString(),
         openingStatus: nextOpeningProgress.openingStatus,
         engineLabel:
           nextOpeningProgress.openingStatus === 'following' &&
@@ -810,6 +932,57 @@ app.post('/api/games/:gameId/undo', async (request, response) => {
   } catch (error) {
     response.status(400).json({
       error: error instanceof Error ? error.message : 'Could not undo the last turn.',
+    })
+  }
+})
+
+app.post('/api/games/:gameId/flag', async (request, response) => {
+  try {
+    const state = await requireAccount(request, response)
+    if (!state) {
+      return
+    }
+
+    const game = await getGame(request.params.gameId)
+    if (!game) {
+      response.status(404).json({ error: 'Game not found.' })
+      return
+    }
+
+    const gameUser = await getUser(game.userId)
+    if (!gameUser || gameUser.accountId !== state.account.id) {
+      response.status(404).json({ error: 'Game not found.' })
+      return
+    }
+
+    if (game.status !== 'active') {
+      response.status(400).json({ error: 'This game is already complete.' })
+      return
+    }
+
+    const activeColor = getActiveColor(game)
+    const timedGame = applyClockTick(game, activeColor)
+    const remainingMs = activeColor === 'white' ? timedGame.whiteTimeMs : timedGame.blackTimeMs
+
+    if (remainingMs > 0) {
+      response.status(400).json({ error: 'Clock has not expired yet.' })
+      return
+    }
+
+    const updatedTimedGame = await updateGame(game.id, () => ({
+      ...timedGame,
+      whiteTimeMs: Math.max(0, timedGame.whiteTimeMs),
+      blackTimeMs: Math.max(0, timedGame.blackTimeMs),
+    }))
+    const finalized = await finalizeGame(
+      updatedTimedGame,
+      getFlaggedResult(updatedTimedGame, activeColor),
+      'timeout',
+    )
+    response.json(await buildGameResponse(finalized.game, finalized.user, finalized.account))
+  } catch (error) {
+    response.status(400).json({
+      error: error instanceof Error ? error.message : 'Could not flag the clock.',
     })
   }
 })
