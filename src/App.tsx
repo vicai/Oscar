@@ -830,6 +830,7 @@ function App() {
   const bottomClockLabel = boardOrientation === 'white' ? 'White' : 'Black'
   const topClockActive = activeClockColor === (boardOrientation === 'white' ? 'black' : 'white')
   const bottomClockActive = activeClockColor === (boardOrientation === 'white' ? 'white' : 'black')
+  const showClocks = Boolean(game)
 
   if (loadingApp) {
     return (
@@ -1294,10 +1295,12 @@ function App() {
               </div>
 
               <div className="board-shell">
-                <div className={`clock-banner ${topClockActive ? 'active' : ''}`}>
-                  <span>{topClockLabel}</span>
-                  <strong>{formatClock(topClockMs)}</strong>
-                </div>
+                {showClocks ? (
+                  <div className={`clock-banner ${topClockActive ? 'active' : ''}`}>
+                    <span>{topClockLabel}</span>
+                    <strong>{formatClock(topClockMs)}</strong>
+                  </div>
+                ) : null}
                 <div className="mobile-board-hint">{boardHint}</div>
                 <Chessboard
                   options={{
@@ -1344,10 +1347,12 @@ function App() {
                     showNotation: true,
                   }}
                 />
-                <div className={`clock-banner bottom ${bottomClockActive ? 'active' : ''}`}>
-                  <span>{bottomClockLabel}</span>
-                  <strong>{formatClock(bottomClockMs)}</strong>
-                </div>
+                {showClocks ? (
+                  <div className={`clock-banner bottom ${bottomClockActive ? 'active' : ''}`}>
+                    <span>{bottomClockLabel}</span>
+                    <strong>{formatClock(bottomClockMs)}</strong>
+                  </div>
+                ) : null}
               </div>
             </div>
 

@@ -403,7 +403,7 @@ button:disabled {
 .board-card {
   display: grid;
   gap: 12px;
-  justify-items: center;
+  justify-items: stretch;
   overflow: hidden;
 }
 
@@ -411,14 +411,16 @@ button:disabled {
   width: 100%;
   display: grid;
   gap: 14px;
-  grid-template-columns: 30px minmax(0, 1fr);
+  grid-template-columns: 36px minmax(0, 1fr);
   align-items: stretch;
 }
 
 .board-shell {
   width: 100%;
-  max-width: min(100%, 720px);
+  max-width: min(100%, 680px);
   margin: 0 auto;
+  display: grid;
+  gap: 10px;
 }
 
 .clock-banner {
@@ -523,17 +525,21 @@ button:disabled {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  flex-wrap: wrap;
   gap: 12px;
   width: 100%;
   color: #666d76;
   font-size: 0.9rem;
-  padding-top: 4px;
+  padding-top: 12px;
+  margin-top: 2px;
   border-top: 1px solid rgba(20, 24, 31, 0.05);
 }
 
 .caption-meta {
   display: grid;
   gap: 4px;
+  min-width: 0;
+  flex: 1 1 280px;
 }
 
 .toolbar-actions {
@@ -541,6 +547,8 @@ button:disabled {
   gap: 8px;
   flex-wrap: wrap;
   justify-content: flex-end;
+  align-items: center;
+  flex: 0 0 auto;
 }
 
 .switch-view {
