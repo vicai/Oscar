@@ -37,6 +37,25 @@ const accountRows = (database.accounts ?? []).map((account) => ({
   updated_at: account.updatedAt,
 }))
 
+const existingAccountIds = new Set(accountRows.map((account) => account.id))
+const inferredLegacyAccountRows = (database.users ?? [])
+  .filter((user) => !existingAccountIds.has(user.accountId ?? user.id))
+  .map((user) => ({
+    id: user.accountId ?? user.id,
+    auth_user_id: null,
+    email: `legacy+${user.accountId ?? user.id}@oscar.local`,
+    is_guest: true,
+    plan: 'free',
+    subscription_status: 'inactive',
+    stripe_customer_id: null,
+    stripe_subscription_id: null,
+    games_used_today: 0,
+    usage_window_started_at: user.createdAt,
+    created_at: user.createdAt,
+    updated_at: user.updatedAt,
+  }))
+const allAccountRows = [...accountRows, ...inferredLegacyAccountRows]
+
 const userRows = (database.users ?? []).map((user) => ({
   id: user.id,
   account_id: user.accountId ?? user.id,
@@ -88,7 +107,7 @@ const sessionRows = (database.sessions ?? []).map((session) => ({
 }))
 
 for (const [table, rows] of [
-  ['oscar_accounts', accountRows],
+  ['oscar_accounts', allAccountRows],
   ['oscar_profiles', userRows],
   ['oscar_games', gameRows],
   ['oscar_sessions', sessionRows],
