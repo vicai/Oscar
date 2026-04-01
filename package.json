@@ -11,12 +11,15 @@
     "build": "pnpm build:server && tsc -b && vite build",
     "build:server": "tsc -p tsconfig.server.json",
     "lint": "eslint .",
+    "migrate:supabase": "node scripts/migrate-local-data-to-supabase.mjs",
     "preview": "vite preview",
     "start": "node build/server/server/index.js",
     "start:server": "node build/server/server/index.js"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.101.1",
     "chess.js": "^1.4.0",
+    "dotenv": "^17.3.1",
     "express": "^5.2.1",
     "react": "^19.2.4",
     "react-chessboard": "^5.10.0",

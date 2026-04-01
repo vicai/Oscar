@@ -38,6 +38,7 @@ export type Evaluation = {
 
 export type AccountRecord = {
   id: string
+  authUserId: string | null
   email: string
   isGuest: boolean
   passwordHash: string

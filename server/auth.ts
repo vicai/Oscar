@@ -4,10 +4,13 @@ import {
   createAccount,
   createSession,
   deleteSession,
+  getAccountByAuthUserId,
   getAccountByEmail,
   getAccountById,
   getSession,
+  updateAccount,
 } from './store.js'
+import { createSupabaseAdminClient, createSupabasePublicClient } from './supabase.js'
 import type { AccountRecord, SessionRecord } from './types.js'
 
 const SESSION_COOKIE_NAME = 'oscar_session'
@@ -38,52 +41,34 @@ export function clearSessionCookie(response: Response) {
   )
 }
 
-export async function registerAccount(email: string, password: string) {
-  const normalizedEmail = email.trim().toLowerCase()
-  if (!normalizedEmail || !normalizedEmail.includes('@')) {
-    throw new Error('A valid email is required.')
+async function attachOrCreateAccountForAuthUser(params: {
+  authUserId: string
+  email: string
+  isGuest: boolean
+}) {
+  const email = params.email.trim().toLowerCase()
+  const existingByAuth = await getAccountByAuthUserId(params.authUserId)
+  if (existingByAuth) {
+    return existingByAuth
   }
 
-  if (password.length < 8) {
-    throw new Error('Password must be at least 8 characters.')
+  const existingByEmail = await getAccountByEmail(email)
+  if (existingByEmail) {
+    return updateAccount(existingByEmail.id, (account) => ({
+      ...account,
+      authUserId: params.authUserId,
+      isGuest: params.isGuest,
+      email,
+      updatedAt: new Date().toISOString(),
+    }))
   }
 
-  const existing = await getAccountByEmail(normalizedEmail)
-  if (existing) {
-    throw new Error('That email is already in use.')
-  }
-
-  const salt = crypto.randomBytes(16).toString('hex')
-  const passwordHash = crypto.scryptSync(password, salt, 64).toString('hex')
   const now = new Date().toISOString()
-
   const account: AccountRecord = {
     id: crypto.randomUUID(),
-    email: normalizedEmail,
-    isGuest: false,
-    passwordHash,
-    passwordSalt: salt,
-    plan: 'free',
-    subscriptionStatus: 'inactive',
-    stripeCustomerId: null,
-    stripeSubscriptionId: null,
-    gamesUsedToday: 0,
-    usageWindowStartedAt: now,
-    createdAt: now,
-    updatedAt: now,
-  }
-
-  return createAccount(account)
-}
-
-export async function createGuestAccount() {
-  const now = new Date().toISOString()
-  const id = crypto.randomUUID()
-
-  const account: AccountRecord = {
-    id,
-    email: `guest+${id}@oscar.local`,
-    isGuest: true,
+    authUserId: params.authUserId,
+    email,
+    isGuest: params.isGuest,
     passwordHash: '',
     passwordSalt: '',
     plan: 'free',
@@ -99,21 +84,65 @@ export async function createGuestAccount() {
   return createAccount(account)
 }
 
+export async function registerAccount(email: string, password: string) {
+  const normalizedEmail = email.trim().toLowerCase()
+  if (!normalizedEmail || !normalizedEmail.includes('@')) {
+    throw new Error('A valid email is required.')
+  }
+
+  if (password.length < 8) {
+    throw new Error('Password must be at least 8 characters.')
+  }
+
+  const supabaseAdmin = createSupabaseAdminClient()
+  const { data, error } = await supabaseAdmin.auth.admin.createUser({
+    email: normalizedEmail,
+    password,
+    email_confirm: true,
+  })
+
+  if (error || !data.user) {
+    throw new Error(error?.message ?? 'Could not create Supabase auth user.')
+  }
+
+  return attachOrCreateAccountForAuthUser({
+    authUserId: data.user.id,
+    email: normalizedEmail,
+    isGuest: false,
+  })
+}
+
+export async function createGuestAccount() {
+  const supabase = createSupabasePublicClient()
+  const { data, error } = await supabase.auth.signInAnonymously()
+
+  if (error || !data.user) {
+    throw new Error(error?.message ?? 'Could not create guest session.')
+  }
+
+  return attachOrCreateAccountForAuthUser({
+    authUserId: data.user.id,
+    email: data.user.email ?? `guest+${data.user.id}@oscar.local`,
+    isGuest: true,
+  })
+}
+
 export async function authenticateAccount(email: string, password: string) {
-  const account = await getAccountByEmail(email)
-  if (!account) {
+  const supabase = createSupabasePublicClient()
+  const { data, error } = await supabase.auth.signInWithPassword({
+    email: email.trim().toLowerCase(),
+    password,
+  })
+
+  if (error || !data.user) {
     throw new Error('Invalid email or password.')
   }
 
-  const passwordHash = crypto
-    .scryptSync(password, account.passwordSalt, 64)
-    .toString('hex')
-
-  if (passwordHash !== account.passwordHash) {
-    throw new Error('Invalid email or password.')
-  }
-
-  return account
+  return attachOrCreateAccountForAuthUser({
+    authUserId: data.user.id,
+    email: data.user.email ?? email,
+    isGuest: false,
+  })
 }
 
 export async function createSessionForAccount(accountId: string, response: Response) {

@@ -1,248 +1,369 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
-import { dirname, resolve } from 'node:path'
-import { Chess } from 'chess.js'
 import type {
   AccountRecord,
-  AccountPlan,
-  Database,
-  GameMode,
   GameRecord,
-  OpeningStatus,
-  PlayerColor,
   SessionRecord,
-  SubscriptionStatus,
-  TimeControlPreset,
   UserRecord,
 } from './types.js'
+import { createSupabaseAdminClient } from './supabase.js'
 
-const dataDirectory = process.env.DATA_DIR
-  ? resolve(process.env.DATA_DIR)
-  : resolve(process.cwd(), 'data')
-const DATA_FILE = resolve(dataDirectory, 'oscar-db.json')
-
-const emptyDatabase: Database = {
-  accounts: [],
-  sessions: [],
-  users: [],
-  games: [],
+type AccountRow = {
+  id: string
+  auth_user_id: string | null
+  email: string
+  is_guest: boolean
+  plan: AccountRecord['plan']
+  subscription_status: AccountRecord['subscriptionStatus']
+  stripe_customer_id: string | null
+  stripe_subscription_id: string | null
+  games_used_today: number
+  usage_window_started_at: string
+  created_at: string
+  updated_at: string
 }
 
-function buildPositionHistoryFromMoves(moveHistory: GameRecord['moveHistory']) {
-  const chess = new Chess()
-  const history = [chess.fen()]
+type SessionRow = {
+  id: string
+  account_id: string
+  expires_at: string
+  created_at: string
+}
 
-  for (const move of moveHistory) {
-    const applied = chess.move({
-      from: move.from,
-      to: move.to,
-      promotion: 'q',
-    })
+type UserRow = {
+  id: string
+  account_id: string
+  name: string
+  target_ai_rating: number
+  games_played: number
+  wins: number
+  losses: number
+  draws: number
+  created_at: string
+  updated_at: string
+}
 
-    if (!applied) {
-      return [history[0]]
-    }
+type GameRow = {
+  id: string
+  user_id: string
+  mode: GameRecord['mode']
+  time_control: GameRecord['timeControl']
+  initial_time_ms: number
+  increment_ms: number
+  white_time_ms: number
+  black_time_ms: number
+  active_turn_started_at: string | null
+  opening_id: string | null
+  opening_name: string | null
+  opening_side: GameRecord['openingSide']
+  opening_status: GameRecord['openingStatus']
+  human_color: GameRecord['humanColor']
+  ai_color: GameRecord['aiColor']
+  status: GameRecord['status']
+  result: GameRecord['result']
+  fen: string
+  pgn: string
+  move_history: GameRecord['moveHistory']
+  position_history: GameRecord['positionHistory']
+  adaptive_rating: number
+  starting_rating: number
+  rating_delta: number | null
+  engine_label: string
+  created_at: string
+  updated_at: string
+}
 
-    history.push(chess.fen())
+function mapAccountRow(row: AccountRow): AccountRecord {
+  return {
+    id: row.id,
+    authUserId: row.auth_user_id,
+    email: row.email.toLowerCase(),
+    isGuest: row.is_guest,
+    passwordHash: '',
+    passwordSalt: '',
+    plan: row.plan,
+    subscriptionStatus: row.subscription_status,
+    stripeCustomerId: row.stripe_customer_id,
+    stripeSubscriptionId: row.stripe_subscription_id,
+    gamesUsedToday: row.games_used_today,
+    usageWindowStartedAt: row.usage_window_started_at,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
   }
-
-  return history
 }
 
-function normalizeAccountRecord(
-  account: Partial<AccountRecord> & Pick<AccountRecord, 'id' | 'email' | 'createdAt' | 'updatedAt'>,
-): AccountRecord {
+function mapSessionRow(row: SessionRow): SessionRecord {
+  return {
+    id: row.id,
+    accountId: row.account_id,
+    expiresAt: row.expires_at,
+    createdAt: row.created_at,
+  }
+}
+
+function mapUserRow(row: UserRow): UserRecord {
+  return {
+    id: row.id,
+    accountId: row.account_id,
+    name: row.name,
+    targetAiRating: row.target_ai_rating,
+    gamesPlayed: row.games_played,
+    wins: row.wins,
+    losses: row.losses,
+    draws: row.draws,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  }
+}
+
+function mapGameRow(row: GameRow): GameRecord {
+  return {
+    id: row.id,
+    userId: row.user_id,
+    mode: row.mode,
+    timeControl: row.time_control,
+    initialTimeMs: row.initial_time_ms,
+    incrementMs: row.increment_ms,
+    whiteTimeMs: row.white_time_ms,
+    blackTimeMs: row.black_time_ms,
+    activeTurnStartedAt: row.active_turn_started_at,
+    openingId: row.opening_id,
+    openingName: row.opening_name,
+    openingSide: row.opening_side,
+    openingStatus: row.opening_status,
+    humanColor: row.human_color,
+    aiColor: row.ai_color,
+    status: row.status,
+    result: row.result,
+    fen: row.fen,
+    pgn: row.pgn,
+    moveHistory: row.move_history ?? [],
+    positionHistory: row.position_history ?? [],
+    adaptiveRating: row.adaptive_rating,
+    startingRating: row.starting_rating,
+    ratingDelta: row.rating_delta,
+    engineLabel: row.engine_label,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  }
+}
+
+function accountRowFromRecord(account: AccountRecord): AccountRow {
   return {
     id: account.id,
+    auth_user_id: account.authUserId,
     email: account.email.toLowerCase(),
-    isGuest: account.isGuest ?? false,
-    passwordHash: account.passwordHash ?? '',
-    passwordSalt: account.passwordSalt ?? '',
-    plan: (account.plan ?? 'free') as AccountPlan,
-    subscriptionStatus: (account.subscriptionStatus ?? 'inactive') as SubscriptionStatus,
-    stripeCustomerId: account.stripeCustomerId ?? null,
-    stripeSubscriptionId: account.stripeSubscriptionId ?? null,
-    gamesUsedToday: account.gamesUsedToday ?? 0,
-    usageWindowStartedAt: account.usageWindowStartedAt ?? account.createdAt,
-    createdAt: account.createdAt,
-    updatedAt: account.updatedAt,
+    is_guest: account.isGuest,
+    plan: account.plan,
+    subscription_status: account.subscriptionStatus,
+    stripe_customer_id: account.stripeCustomerId,
+    stripe_subscription_id: account.stripeSubscriptionId,
+    games_used_today: account.gamesUsedToday,
+    usage_window_started_at: account.usageWindowStartedAt,
+    created_at: account.createdAt,
+    updated_at: account.updatedAt,
   }
 }
 
-function normalizeSessionRecord(
-  session: Partial<SessionRecord> &
-    Pick<SessionRecord, 'id' | 'accountId' | 'createdAt'>,
-): SessionRecord {
+function sessionRowFromRecord(session: SessionRecord): SessionRow {
   return {
     id: session.id,
-    accountId: session.accountId,
-    createdAt: session.createdAt,
-    expiresAt: session.expiresAt ?? new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
+    account_id: session.accountId,
+    expires_at: session.expiresAt,
+    created_at: session.createdAt,
   }
 }
 
-function normalizeUserRecord(
-  user: Omit<UserRecord, 'accountId'> & { accountId?: string },
-): UserRecord {
+function userRowFromRecord(user: UserRecord): UserRow {
   return {
-    ...user,
-    accountId: user.accountId ?? user.id,
+    id: user.id,
+    account_id: user.accountId,
+    name: user.name,
+    target_ai_rating: user.targetAiRating,
+    games_played: user.gamesPlayed,
+    wins: user.wins,
+    losses: user.losses,
+    draws: user.draws,
+    created_at: user.createdAt,
+    updated_at: user.updatedAt,
   }
 }
 
-function normalizeGameRecord(
-  game: Omit<
-    GameRecord,
-    | 'mode'
-    | 'positionHistory'
-    | 'openingId'
-    | 'openingName'
-    | 'openingSide'
-    | 'openingStatus'
-    | 'timeControl'
-    | 'initialTimeMs'
-    | 'incrementMs'
-    | 'whiteTimeMs'
-    | 'blackTimeMs'
-    | 'activeTurnStartedAt'
-  > & {
-    mode?: GameMode
-    positionHistory?: string[]
-    openingId?: string | null
-    openingName?: string | null
-    openingSide?: PlayerColor | null
-    openingStatus?: OpeningStatus
-    timeControl?: TimeControlPreset
-    initialTimeMs?: number
-    incrementMs?: number
-    whiteTimeMs?: number
-    blackTimeMs?: number
-    activeTurnStartedAt?: string | null
-  },
-): GameRecord {
-  const fallbackHistory =
-    game.positionHistory && game.positionHistory.length > 0
-      ? game.positionHistory
-      : buildPositionHistoryFromMoves(game.moveHistory)
-
+function gameRowFromRecord(game: GameRecord): GameRow {
   return {
-    ...game,
-    mode: game.mode ?? 'adaptive',
-    timeControl: game.timeControl ?? '15_0',
-    initialTimeMs: game.initialTimeMs ?? 15 * 60 * 1000,
-    incrementMs: game.incrementMs ?? 0,
-    whiteTimeMs: game.whiteTimeMs ?? game.initialTimeMs ?? 15 * 60 * 1000,
-    blackTimeMs: game.blackTimeMs ?? game.initialTimeMs ?? 15 * 60 * 1000,
-    activeTurnStartedAt: game.activeTurnStartedAt ?? game.createdAt ?? null,
-    positionHistory: fallbackHistory,
-    openingId: game.openingId ?? null,
-    openingName: game.openingName ?? null,
-    openingSide: game.openingSide ?? null,
-    openingStatus: game.openingStatus ?? 'none',
+    id: game.id,
+    user_id: game.userId,
+    mode: game.mode,
+    time_control: game.timeControl,
+    initial_time_ms: game.initialTimeMs,
+    increment_ms: game.incrementMs,
+    white_time_ms: game.whiteTimeMs,
+    black_time_ms: game.blackTimeMs,
+    active_turn_started_at: game.activeTurnStartedAt,
+    opening_id: game.openingId,
+    opening_name: game.openingName,
+    opening_side: game.openingSide,
+    opening_status: game.openingStatus,
+    human_color: game.humanColor,
+    ai_color: game.aiColor,
+    status: game.status,
+    result: game.result,
+    fen: game.fen,
+    pgn: game.pgn,
+    move_history: game.moveHistory,
+    position_history: game.positionHistory,
+    adaptive_rating: game.adaptiveRating,
+    starting_rating: game.startingRating,
+    rating_delta: game.ratingDelta,
+    engine_label: game.engineLabel,
+    created_at: game.createdAt,
+    updated_at: game.updatedAt,
   }
-}
-
-async function ensureDataFile() {
-  await mkdir(dirname(DATA_FILE), { recursive: true })
-
-  try {
-    await readFile(DATA_FILE, 'utf8')
-  } catch {
-    await writeFile(DATA_FILE, JSON.stringify(emptyDatabase, null, 2), 'utf8')
-  }
-}
-
-async function readDatabase(): Promise<Database> {
-  await ensureDataFile()
-  const raw = await readFile(DATA_FILE, 'utf8')
-  const parsed = JSON.parse(raw) as Partial<Database> & {
-    games?: Array<
-      Omit<GameRecord, 'mode' | 'positionHistory'> & {
-        openingId?: string | null
-        openingName?: string | null
-        openingSide?: PlayerColor | null
-        openingStatus?: OpeningStatus
-        mode?: GameMode
-        positionHistory?: string[]
-      }
-    >
-    users?: Array<Omit<UserRecord, 'accountId'> & { accountId?: string }>
-    accounts?: Array<Partial<AccountRecord> & Pick<AccountRecord, 'id' | 'email' | 'createdAt' | 'updatedAt'>>
-    sessions?: Array<Partial<SessionRecord> & Pick<SessionRecord, 'id' | 'accountId' | 'createdAt'>>
-  }
-
-  return {
-    accounts: (parsed.accounts ?? []).map(normalizeAccountRecord),
-    sessions: (parsed.sessions ?? []).map(normalizeSessionRecord),
-    users: (parsed.users ?? []).map(normalizeUserRecord),
-    games: (parsed.games ?? []).map(normalizeGameRecord),
-  }
-}
-
-async function writeDatabase(database: Database) {
-  await ensureDataFile()
-  await writeFile(DATA_FILE, JSON.stringify(database, null, 2), 'utf8')
 }
 
 export async function getAccountById(accountId: string) {
-  const database = await readDatabase()
-  return database.accounts.find((account) => account.id === accountId) ?? null
+  const supabase = createSupabaseAdminClient()
+  const { data, error } = await supabase
+    .from('oscar_accounts')
+    .select('*')
+    .eq('id', accountId)
+    .maybeSingle<AccountRow>()
+
+  if (error) {
+    throw error
+  }
+
+  return data ? mapAccountRow(data) : null
+}
+
+export async function getAccountByAuthUserId(authUserId: string) {
+  const supabase = createSupabaseAdminClient()
+  const { data, error } = await supabase
+    .from('oscar_accounts')
+    .select('*')
+    .eq('auth_user_id', authUserId)
+    .maybeSingle<AccountRow>()
+
+  if (error) {
+    throw error
+  }
+
+  return data ? mapAccountRow(data) : null
 }
 
 export async function getAccountByEmail(email: string) {
-  const database = await readDatabase()
-  const normalizedEmail = email.trim().toLowerCase()
-  return database.accounts.find((account) => account.email === normalizedEmail) ?? null
+  const supabase = createSupabaseAdminClient()
+  const { data, error } = await supabase
+    .from('oscar_accounts')
+    .select('*')
+    .eq('email', email.trim().toLowerCase())
+    .maybeSingle<AccountRow>()
+
+  if (error) {
+    throw error
+  }
+
+  return data ? mapAccountRow(data) : null
 }
 
 export async function createAccount(account: AccountRecord) {
-  const database = await readDatabase()
-  database.accounts.push(account)
-  await writeDatabase(database)
-  return account
+  const supabase = createSupabaseAdminClient()
+  const row = accountRowFromRecord(account)
+  const { data, error } = await supabase
+    .from('oscar_accounts')
+    .insert(row)
+    .select('*')
+    .single<AccountRow>()
+
+  if (error) {
+    throw error
+  }
+
+  return mapAccountRow(data)
+}
+
+export async function upsertAccount(account: AccountRecord) {
+  const supabase = createSupabaseAdminClient()
+  const { data, error } = await supabase
+    .from('oscar_accounts')
+    .upsert(accountRowFromRecord(account))
+    .select('*')
+    .single<AccountRow>()
+
+  if (error) {
+    throw error
+  }
+
+  return mapAccountRow(data)
 }
 
 export async function updateAccount(
   accountId: string,
   updater: (account: AccountRecord) => AccountRecord,
 ) {
-  const database = await readDatabase()
-  const index = database.accounts.findIndex((account) => account.id === accountId)
-  if (index === -1) {
+  const current = await getAccountById(accountId)
+  if (!current) {
     throw new Error('Account not found.')
   }
 
-  const updated = updater(database.accounts[index])
-  database.accounts[index] = updated
-  await writeDatabase(database)
-  return updated
+  const next = updater(current)
+  return upsertAccount(next)
 }
 
 export async function createSession(session: SessionRecord) {
-  const database = await readDatabase()
-  database.sessions = database.sessions.filter(
-    (currentSession) => currentSession.id !== session.id,
-  )
-  database.sessions.push(session)
-  await writeDatabase(database)
-  return session
+  const supabase = createSupabaseAdminClient()
+  const { data, error } = await supabase
+    .from('oscar_sessions')
+    .upsert(sessionRowFromRecord(session))
+    .select('*')
+    .single<SessionRow>()
+
+  if (error) {
+    throw error
+  }
+
+  return mapSessionRow(data)
 }
 
 export async function getSession(sessionId: string) {
-  const database = await readDatabase()
-  return database.sessions.find((session) => session.id === sessionId) ?? null
+  const supabase = createSupabaseAdminClient()
+  const { data, error } = await supabase
+    .from('oscar_sessions')
+    .select('*')
+    .eq('id', sessionId)
+    .maybeSingle<SessionRow>()
+
+  if (error) {
+    throw error
+  }
+
+  return data ? mapSessionRow(data) : null
 }
 
 export async function deleteSession(sessionId: string) {
-  const database = await readDatabase()
-  database.sessions = database.sessions.filter((session) => session.id !== sessionId)
-  await writeDatabase(database)
+  const supabase = createSupabaseAdminClient()
+  const { error } = await supabase
+    .from('oscar_sessions')
+    .delete()
+    .eq('id', sessionId)
+
+  if (error) {
+    throw error
+  }
 }
 
 export async function listUsersForAccount(accountId: string) {
-  const database = await readDatabase()
-  return database.users
-    .filter((user) => user.accountId === accountId)
-    .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
+  const supabase = createSupabaseAdminClient()
+  const { data, error } = await supabase
+    .from('oscar_profiles')
+    .select('*')
+    .eq('account_id', accountId)
+    .order('created_at', { ascending: true })
+    .returns<UserRow[]>()
+
+  if (error) {
+    throw error
+  }
+
+  return (data ?? []).map(mapUserRow)
 }
 
 export async function createUser(accountId: string, name: string) {
@@ -251,9 +372,7 @@ export async function createUser(accountId: string, name: string) {
     throw new Error('Profile name is required.')
   }
 
-  const database = await readDatabase()
   const now = new Date().toISOString()
-
   const user: UserRecord = {
     id: crypto.randomUUID(),
     accountId,
@@ -267,56 +386,119 @@ export async function createUser(accountId: string, name: string) {
     updatedAt: now,
   }
 
-  database.users.push(user)
-  await writeDatabase(database)
-  return user
+  const supabase = createSupabaseAdminClient()
+  const { data, error } = await supabase
+    .from('oscar_profiles')
+    .insert(userRowFromRecord(user))
+    .select('*')
+    .single<UserRow>()
+
+  if (error) {
+    throw error
+  }
+
+  return mapUserRow(data)
 }
 
 export async function getUser(userId: string) {
-  const database = await readDatabase()
-  return database.users.find((user) => user.id === userId) ?? null
+  const supabase = createSupabaseAdminClient()
+  const { data, error } = await supabase
+    .from('oscar_profiles')
+    .select('*')
+    .eq('id', userId)
+    .maybeSingle<UserRow>()
+
+  if (error) {
+    throw error
+  }
+
+  return data ? mapUserRow(data) : null
 }
 
 export async function updateUser(userId: string, updater: (user: UserRecord) => UserRecord) {
-  const database = await readDatabase()
-  const index = database.users.findIndex((user) => user.id === userId)
-  if (index === -1) {
+  const current = await getUser(userId)
+  if (!current) {
     throw new Error('Profile not found.')
   }
 
-  const updated = updater(database.users[index])
-  database.users[index] = updated
-  await writeDatabase(database)
-  return updated
+  const next = updater(current)
+  const supabase = createSupabaseAdminClient()
+  const { data, error } = await supabase
+    .from('oscar_profiles')
+    .upsert(userRowFromRecord(next))
+    .select('*')
+    .single<UserRow>()
+
+  if (error) {
+    throw error
+  }
+
+  return mapUserRow(data)
 }
 
 export async function createGame(game: GameRecord) {
-  const database = await readDatabase()
-  database.games = database.games.filter(
-    (existing) => !(existing.userId === game.userId && existing.status === 'active'),
-  )
-  database.games.push(game)
-  await writeDatabase(database)
-  return game
+  const supabase = createSupabaseAdminClient()
+  const { error: clearError } = await supabase
+    .from('oscar_games')
+    .update({
+      status: 'resigned',
+      updated_at: new Date().toISOString(),
+    })
+    .eq('user_id', game.userId)
+    .eq('status', 'active')
+
+  if (clearError) {
+    throw clearError
+  }
+
+  const { data, error } = await supabase
+    .from('oscar_games')
+    .insert(gameRowFromRecord(game))
+    .select('*')
+    .single<GameRow>()
+
+  if (error) {
+    throw error
+  }
+
+  return mapGameRow(data)
 }
 
 export async function getGame(gameId: string) {
-  const database = await readDatabase()
-  return database.games.find((game) => game.id === gameId) ?? null
+  const supabase = createSupabaseAdminClient()
+  const { data, error } = await supabase
+    .from('oscar_games')
+    .select('*')
+    .eq('id', gameId)
+    .maybeSingle<GameRow>()
+
+  if (error) {
+    throw error
+  }
+
+  return data ? mapGameRow(data) : null
 }
 
 export async function updateGame(
   gameId: string,
   updater: (game: GameRecord) => GameRecord,
 ) {
-  const database = await readDatabase()
-  const index = database.games.findIndex((game) => game.id === gameId)
-  if (index === -1) {
+  const current = await getGame(gameId)
+  if (!current) {
     throw new Error('Game not found.')
   }
 
-  const updated = updater(database.games[index])
-  database.games[index] = updated
-  await writeDatabase(database)
-  return updated
+  const next = updater(current)
+  const supabase = createSupabaseAdminClient()
+  const { data, error } = await supabase
+    .from('oscar_games')
+    .upsert(gameRowFromRecord(next))
+    .select('*')
+    .single<GameRow>()
+
+  if (error) {
+    throw error
+  }
+
+  return mapGameRow(data)
 }

@@ -21,6 +21,7 @@ import {
   updateGame,
   updateUser,
 } from './store.js'
+import { isSupabaseConfigured } from './supabase.js'
 import type {
   AccountRecord,
   GameMode,
@@ -120,6 +121,7 @@ app.get('/healthz', (_request, response) => {
     ok: true,
     port,
     dataDir: dataDirectory,
+    supabaseConfigured: isSupabaseConfigured(),
     billingConfigured: isBillingConfigured(),
   })
 })
@@ -1029,6 +1031,7 @@ app.listen(port, host, () => {
   console.log(`Oscar server listening on http://${host}:${port}`)
   console.log(`Serving frontend from ${distDir}`)
   console.log(`Using data directory ${dataDirectory}`)
+  console.log(`Supabase configured: ${isSupabaseConfigured()}`)
   if (process.env.STRIPE_SECRET_KEY) {
     console.log('Stripe billing enabled')
   }
